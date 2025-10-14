@@ -1,0 +1,3 @@
+[submodule "jpamb"]
+	path = jpamb
+	url = https://github.com/kalhauge/jpamb.git
