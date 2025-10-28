@@ -63,14 +63,15 @@ class Stack[T]:
         if not self:
             return "ϵ"
         return "".join(f"{v}" for v in self.items)
-    
+
+
 class OperandStack(Stack[jvm.Value]):
     def push(self, value):
         assert value.type in [jvm.Int(), jvm.Float(), jvm.Reference()]
         return super().push(value)
 
 
-suite = jpamb.Suite()
+suite = jpamb_local.Suite()
 bc = Bytecode(suite, dict())
 
 
@@ -103,7 +104,7 @@ def step(state: State) -> State | str:
     opr = bc[frame.pc]
     print(f"@@COV {frame.pc.method} {frame.pc.offset}")
     logger.debug(f"STEP {opr}\n{state}")
-    
+
     match opr:
         case jvm.Push(value=v):
             frame.stack.push(v)
@@ -113,8 +114,7 @@ def step(state: State) -> State | str:
             frame.stack.push(frame.locals[i])
             frame.pc += 1
             return state
-        
-        
+
         case jvm.Binary(type=jvm.Int(), operant=jvm.BinaryOpr.Div):
             v2, v1 = frame.stack.pop(), frame.stack.pop()
             assert v1.type is jvm.Int(), f"expected int, but got {v1}"
@@ -124,7 +124,7 @@ def step(state: State) -> State | str:
             frame.stack.push(jvm.Value.int(v1.value // v2.value))
             frame.pc += 1
             return state
-        case jvm.Return(type=jvm.Int()): # return instruction for ints
+        case jvm.Return(type=jvm.Int()):  # return instruction for ints
             v1 = frame.stack.pop()
             state.frames.pop()
             if state.frames:
@@ -134,7 +134,7 @@ def step(state: State) -> State | str:
                 return state
             else:
                 return "ok"
-        case jvm.Return(type=None): # return instruction for void
+        case jvm.Return(type=None):  # return instruction for void
             state.frames.pop()
             if state.frames:
                 frame = state.frames.peek()
@@ -142,10 +142,10 @@ def step(state: State) -> State | str:
                 return state
             else:
                 return "ok"
-        case jvm.Get(static=s, field=f): # only static int fields
-            frame.stack.push(jvm.Value.int(0)) #pushing s to the stack
+        case jvm.Get(static=s, field=f):  # only static int fields
+            frame.stack.push(jvm.Value.int(0))  # pushing s to the stack
             frame.pc += 1
-            return state  
+            return state
         case jvm.Boolean():
             frame.stack.push("Z")
             frame.pc += 1
@@ -173,32 +173,39 @@ def step(state: State) -> State | str:
             else:
                 frame.pc += 1
             return state
-        
+
         # Adding case for jvm.binary operation
         case jvm.Binary(type=jvm.Int(), operant=op):
-            v2 = frame.stack.pop()   # TOP
-            v1 = frame.stack.pop()   # BELOW TOP
+            v2 = frame.stack.pop()  # TOP
+            v1 = frame.stack.pop()  # BELOW TOP
             assert v1.type == jvm.Int() and v2.type == jvm.Int()
-            
-            INT_MIN, INT_MAX = -(2**31), 2**31 - 1
-            def _would_overflow(x): return x < INT_MIN or x > INT_MAX
 
-            
+            INT_MIN, INT_MAX = -(2**31), 2**31 - 1
+
+            def _would_overflow(x):
+                return x < INT_MIN or x > INT_MAX
+
             match op:
                 case jvm.BinaryOpr.Add:
                     res = v1.value + v2.value
                     if _would_overflow(res):
-                        print(f"@@FIND overflow {frame.pc.offset} {v1.value} {v2.value}")
+                        print(
+                            f"@@FIND overflow {frame.pc.offset} {v1.value} {v2.value}"
+                        )
                     frame.stack.push(jvm.Value.int(res))
                 case jvm.BinaryOpr.Sub:
                     res = v1.value - v2.value
                     if _would_overflow(res):
-                        print(f"@@FIND overflow {frame.pc.offset} {v1.value} {v2.value}")
+                        print(
+                            f"@@FIND overflow {frame.pc.offset} {v1.value} {v2.value}"
+                        )
                     frame.stack.push(jvm.Value.int(res))
                 case jvm.BinaryOpr.Mul:
                     res = v1.value * v2.value
                     if _would_overflow(res):
-                        print(f"@@FIND overflow {frame.pc.offset} {v1.value} {v2.value}")
+                        print(
+                            f"@@FIND overflow {frame.pc.offset} {v1.value} {v2.value}"
+                        )
                     frame.stack.push(jvm.Value.int(res))
                 case jvm.BinaryOpr.Div:
                     if v2.value == 0:
@@ -221,27 +228,34 @@ def step(state: State) -> State | str:
                 case jvm.BinaryOpr.Shr:
                     frame.stack.push(jvm.Value.int(v1.value >> v2.value))
                 case jvm.BinaryOpr.Ushr:
-                    frame.stack.push(jvm.Value.int((v1.value % 0x100000000) >> v2.value))
+                    frame.stack.push(
+                        jvm.Value.int((v1.value % 0x100000000) >> v2.value)
+                    )
                 case _:
                     raise NotImplementedError(str(op))
             frame.pc += 1
             return state
-        
-        
-        
-        case jvm.If(condition=c, target=t): # if condition for integers
-            v2 = frame.stack.pop()   # TOP
-            v1 = frame.stack.pop()   # BELOW TOP
+
+        case jvm.If(condition=c, target=t):  # if condition for integers
+            v2 = frame.stack.pop()  # TOP
+            v1 = frame.stack.pop()  # BELOW TOP
             assert v1.type == jvm.Int() and v2.type == jvm.Int()
 
             match c:
-                case "ne": jump = (v1.value != v2.value)
-                case "eq": jump = (v1.value == v2.value)
-                case "gt": jump = (v1.value >  v2.value)
-                case "ge": jump = (v1.value >= v2.value)
-                case "lt": jump = (v1.value <  v2.value)
-                case "le": jump = (v1.value <= v2.value)
-                case _:    raise NotImplementedError(str(c))
+                case "ne":
+                    jump = v1.value != v2.value
+                case "eq":
+                    jump = v1.value == v2.value
+                case "gt":
+                    jump = v1.value > v2.value
+                case "ge":
+                    jump = v1.value >= v2.value
+                case "lt":
+                    jump = v1.value < v2.value
+                case "le":
+                    jump = v1.value <= v2.value
+                case _:
+                    raise NotImplementedError(str(c))
 
             if jump:
                 frame.pc.offset = t
@@ -249,7 +263,7 @@ def step(state: State) -> State | str:
                 frame.pc += 1
             return state
         case jvm.New(classname=c):
-            
+
             return "assertion error"
         case jvm.Dup():
             v = frame.stack.pop()
@@ -276,11 +290,11 @@ for i, v in enumerate(input.values):
             pass
         case jvm.Value(type=jvm.Float()):
             pass
-        case jvm.Value(type=jvm.Boolean(), value = value):
-            v= jvm.Value.int(1 if value else 0)
+        case jvm.Value(type=jvm.Boolean(), value=value):
+            v = jvm.Value.int(1 if value else 0)
         case jvm.Value(type=jvm.Int()):
             pass
-        #case jvm.Value(type=jvm.Char()):
+        # case jvm.Value(type=jvm.Char()):
         case _:
             assert False, f"Do not know how to handle {v}"
     logger.debug(f"v has the value: {v}")
@@ -288,7 +302,7 @@ for i, v in enumerate(input.values):
 
 state = State({}, Stack.empty().push(frame))
 
-for x in range(1000): # prevent infinite loop
+for x in range(1000):  # prevent infinite loop
     state = step(state)
     if isinstance(state, str):
         print(state)
