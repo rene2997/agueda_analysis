@@ -379,22 +379,28 @@ def step(state: State) -> State | str:
 
             if isinstance(array, list) or isinstance(array, tuple):
                 logger.debug(f"TEST 1: {array}")
-
+            
                 if len(array) <= 0:
                     logger.debug(f"OUT OF BOUNDS")
                     return "out of bounds" #array out of bounds case
 
-                if i.value <= 0 or i.value >= len(array): #arraySometimesNull case i'm uncertain about the use of <=0 rather then < 0 
+                if i.value < 0 or i.value >= len(array): #arraySometimesNull case i'm uncertain about the use of <=0 rather then < 0 
                     logger.debug(f"TEST 2: {array}")
-                    return "out of bounds"
-                
+                    return "out of bounds" #out of bounds 
+                            
                 #return "assertion error"
+                state.heap[af.value + i.value] = v
+                logger.debug(f"V VALUE: {v}")
+                        
+                frame.pc += 1
+                return state
+            
             state.heap[af.value + i.value] = v
             logger.debug(f"V VALUE: {v}")
                     
             frame.pc += 1
             return state
-        
+    
         case jvm.Goto(target=t):
             frame.pc.offset = t 
             return state
@@ -411,8 +417,7 @@ def step(state: State) -> State | str:
             if aref.value is None:
                 return "null pointer"
             
-            if isinstance(aref.value, list):
-                # good, it's an array
+            if isinstance(aref.value, list): #It's an array
                 # Get the array from the heap if it's a reference
                 array = state.heap.get(aref.value)
                 if array is None:
