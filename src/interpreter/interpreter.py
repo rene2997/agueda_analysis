@@ -96,7 +96,7 @@ class State:
 
     def __str__(self):
         return f"{self.heap} {self.frames}"
-
+    
 def step(state: State) -> State | str:
     assert isinstance(state, State), f"expected frame but got {state}"
     frame = state.frames.peek()
@@ -377,8 +377,6 @@ def step(state: State) -> State | str:
             if array is None:
                 return "null pointer"
             
-
-
             if isinstance(array, list) or isinstance(array, tuple):
                 logger.debug(f"TEST 1: {array}")
             

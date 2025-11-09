@@ -1,7 +1,75 @@
 from dataclasses import dataclass
 from typing import List, TypeVar, Generic
 from abc import ABC, abstractmethod
+from executable import Executable
 
+
+@dataclass
+class Sign:
+    values: set[str]
+    @staticmethod
+    def top() -> Self:
+        return Sign({"+", "-", "0"})
+ 
+    def __le__(self, other) -> bool:
+        return self.values <= other.values
+ 
+    def __or__(self, other) -> bool:
+        return Sign(self.values | other.values)
+    
+    def __and__(self, other) -> bool:
+        return Sign(self.values & other.values)
+ 
+    @staticmethod
+    def abstract(values: set[int]) -> Self:
+        return Sign(
+            {"+" for v in values if v > 0}
+            | {"-" for v in values if v < 0}
+            | {"0" for v in values if v == 0}
+        )
+ 
+    def __contains__(self, value: int) -> bool:
+        if value > 0:
+            return "+" in self.values
+
+        if value < 0:
+            return "-" in self.values
+
+        if value == 0:
+            return "-" in self.values
+        
+
+@dataclass
+class Parity:
+    values: set[str]
+    @staticmethod
+    def top() -> Self:
+        return Parity({"even", "odd"})
+ 
+    def __le__(self, other) -> bool:
+        return self.values <= other.values
+ 
+    def __or__(self, other) -> bool:
+        return Parity(self.values | other.values)
+    
+    def __and__(self, other) -> bool:
+        return Parity(self.values & other.values)
+ 
+    @staticmethod
+    def abstract(values: set[int]) -> Self:
+        return Parity(
+            {"even" for v in values if (v % 2 == 0)}
+            | {"odd" for v in values if (v % 2 == 1)}
+        )
+ 
+    def __contains__(self, value: int) -> bool:
+        if v % 2 == 0:
+            return "even" in self.values
+
+        if v % 2 == 1:
+            return "odd" in self.values
+
+"""""
 #these are all the methods inside Abstraction that are gonna be overwritten by every other method
 #bottom(): impossible value (empty set of concrete values)
 
@@ -57,9 +125,6 @@ class Abstraction(ABC):
         for v in values:
             result = result.join(cls.from_value(v)) # calls subclass's from_value
         return result
-
-class Executable(ABC):
-    pass
 
 @dataclass
 class Sign(Abstraction, Executable):
@@ -360,7 +425,7 @@ class State(Generic[T], Abstraction):
     # ---------- JVM-like helpers ----------
     @classmethod
     def new(cls, args: List[T], n_locals: int):
-        """Equivalent to Rust State::new."""
+        Equivalent to Rust State::new.
         padded = args + [args[0].bottom()] * (n_locals - len(args))
         return cls(stack=[], locals=padded)
 
@@ -384,6 +449,4 @@ class State(Generic[T], Abstraction):
         s_stack = ", ".join(str(v) for v in self.stack)
         s_locals = ", ".join(str(v) for v in self.locals)
         return f"Stack: [{s_stack}], Locals: [{s_locals}]"
-
-
-
+"""
