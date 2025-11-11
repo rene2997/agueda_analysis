@@ -104,21 +104,29 @@ class Sign:
             for y in av2.values:
                 match (x, y):
                     case ("+", "+"):
-                        outvalues.add("-", "0", "+")
+                        outvalues.add("-")
+                        outvalues.add("+")
+                        outvalues.add("0")
                     case ("+", "-"):
                         outvalues.add("+")
                     case ("+", "0"):
                         outvalues.add("+")
                     case ("-", "+"):
-                        outvalues.add("-", "0", "+") 
+                        outvalues.add("-")
+                        outvalues.add("+")
+                        outvalues.add("0")
                     case ("-", "-"):
-                        outvalues.add("-", "0", "+") 
+                        outvalues.add("-")
+                        outvalues.add("+")
+                        outvalues.add("0") 
                     case ("-", "0"):
                         outvalues.add("+")
                     case ("0", "+"):
-                        outvalues.add("-", "0") 
+                        outvalues.add("-")
+                        outvalues.add("0")
                     case ("0", "-"):
-                        outvalues.add("0", "+") 
+                        outvalues.add("0")
+                        outvalues.add("+") 
                     case ("0", "0"):
                         outvalues.add("0")
         return Sign(outvalues)
