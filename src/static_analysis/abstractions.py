@@ -1,7 +1,6 @@
 from dataclasses import dataclass
 from typing import List, TypeVar, Generic
 from abc import ABC, abstractmethod
-from executable import Executable
 
 @dataclass
 class Sign:
@@ -37,6 +36,118 @@ class Sign:
         if value == 0:
             return "-" in self.values
         
+    def binary_add(av1, av2):
+        print(f"add: {av1=} {av2=}")
+        outvalues = set()
+        if(av1.values == [] or av2.values == []):
+            pass
+        else:
+            for x in av1.values:
+                for y in av2.values:
+                    print(f"x:{x}")
+                    print(f"y:{y}")
+                    match (x, y):
+                        case ("+", "+"):
+                            outvalues.add("+")
+                        case ("+", "-"):
+                            outvalues.add("-")
+                            outvalues.add("+")
+                            outvalues.add("0")
+                        case ("+", "0"):
+                            outvalues.add("+")
+                        case ("-", "+"):
+                            outvalues.add("-")
+                            outvalues.add("+")
+                            outvalues.add("0")
+                        case ("-", "-"):
+                            outvalues.add("-")
+                        case ("-", "0"):
+                            outvalues.add("-")
+                        case ("0", "+"):
+                            outvalues.add("+")
+                        case ("0", "-"):
+                            outvalues.add("-")
+                        case ("0", "0"):
+                            outvalues.add("0")
+            return Sign(outvalues) #Any function that uses yield becomes a generator, not a normal function.
+
+    def binary_div(av1, av2):
+        print(f"div: {av1=} {av2=}")
+        outvalues = set()
+        for x in av1.values:
+            for y in av2.values:
+                match (x, y):
+                    case ("+", "+"):
+                        outvalues.add("+") #otherwise we would return an empty set
+                    case ("+", "-"):
+                        outvalues.add("-")
+                    case ("+", "0"):
+                        yield "divide by zero"
+                    case ("-", "+"):
+                        outvalues.add("-")
+                    case ("-", "-"):
+                        outvalues.add("-")
+                    case ("-", "0"):
+                        yield "divide by zero"
+                    case ("0", "+"):
+                        outvalues.add("0")
+                    case ("0", "-"):
+                        outvalues.add("0")
+                    case ("0", "0"):
+                        outvalues.add("0")
+        return Sign(outvalues)
+
+    def binary_sub(av1, av2):
+        print(f"div: {av1=} {av2=}")
+        outvalues = set()
+        for x in av1.values:
+            for y in av2.values:
+                match (x, y):
+                    case ("+", "+"):
+                        outvalues.add("-", "0", "+")
+                    case ("+", "-"):
+                        outvalues.add("+")
+                    case ("+", "0"):
+                        outvalues.add("+")
+                    case ("-", "+"):
+                        outvalues.add("-", "0", "+") 
+                    case ("-", "-"):
+                        outvalues.add("-", "0", "+") 
+                    case ("-", "0"):
+                        outvalues.add("+")
+                    case ("0", "+"):
+                        outvalues.add("-", "0") 
+                    case ("0", "-"):
+                        outvalues.add("0", "+") 
+                    case ("0", "0"):
+                        outvalues.add("0")
+        return Sign(outvalues)
+    
+    def binary_mul(av1, av2):
+        print(f"div: {av1=} {av2=}")
+        outvalues = set()
+        for x in av1.values:
+            for y in av2.values:
+                match (x, y):
+                    case ("+", "+"):
+                        outvalues.add("+")
+                    case ("+", "-"):
+                        outvalues.add("-")
+                    case ("+", "0"):
+                        outvalues.add("0")
+                    case ("-", "+"):
+                        outvalues.add("-")
+                    case ("-", "-"):
+                        outvalues.add("-")
+                    case ("-", "0"):
+                        outvalues.add("0")
+                    case ("0", "+"):
+                        outvalues.add("0")
+                    case ("0", "-"):
+                        outvalues.add("0")
+                    case ("0", "0"):
+                        outvalues.add("0")
+        return Sign(outvalues)
 
 @dataclass
 class Parity:
