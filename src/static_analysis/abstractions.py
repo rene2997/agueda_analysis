@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import List, TypeVar, Generic
 from abc import ABC, abstractmethod
+from executable import Executable
 
 @dataclass
 class Sign:
@@ -36,7 +37,6 @@ class Sign:
         if value == 0:
             return "-" in self.values
         
-
 
 @dataclass
 class Parity:
