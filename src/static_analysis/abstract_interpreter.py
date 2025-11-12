@@ -110,15 +110,14 @@ def step(state: AState) -> AState | str:
 
     match opr:
         case jvm.Push(value=v):
-            av = Sign.abstract(v)
-            logger.debug(f"value being pushed is: {av}")
+            logger.debug(f"v is: {v}")
+            av = Sign.abstract(v.value)
             frame.stack.push(av)
             frame.pc += 1
             return state
         
         case jvm.Load(type=t, index=i):
             v = frame.locals[i]
-            v = Sign.abstract(v)
             logger.debug(f"value being loaded is: {v}")
             frame.stack.push(v)
             frame.pc += 1
@@ -129,12 +128,44 @@ def step(state: AState) -> AState | str:
             logger.debug(f"frame.stack: {frame.stack}")
             logger.debug(f"v2: {v2}")
             logger.debug(f"v1: {v1}")
-            if v2 == 0:
-                return "divide by zero"
+            for v in v2.values:
+                if v == '0':
+                    return "divide by zero"
             frame.stack.push(Sign.binary_op(v1,v2,Sign.sign_div))
             frame.pc += 1
             return state
         
+        case jvm.Return(type=t): # return instruction for void
+            match t:
+                case jvm.Int():
+                    v1 = frame.stack.pop()
+                    state.frames.pop()
+                    if state.frames:
+                        frame = state.frames.peek()
+                        frame.stack.push(v1)
+                        frame.pc += 1
+                        return state
+                    else:
+                        return "ok"
+                case None:
+                    state.frames.pop()
+                    if state.frames:
+                        frame = state.frames.peek()
+                        frame.pc += 1
+                        return state
+                    else:
+                        return "ok"
+                case jvm.Reference():
+                    v1 = frame.stack.pop()
+                    state.frames.pop()
+                    if state.frames:
+                        frame = state.frames.peek()
+                        frame.stack.push(v1)
+                        frame.pc += 1
+                        return state
+                    else:
+                        return "ok"
+            
         case a:
             a.help()
             raise NotImplementedError(f"Don't know how to handle: {a!r}")
@@ -162,6 +193,9 @@ for i, v in enumerate(input.values):
 
         case jvm.Value(type=jvm.Int(), value= value):
             v = (Sign.abstract(value))
+
+        case jvm.Value(type=jvm.Value(), value= value):
+            v = (Sign.abstract(value.value))
 
         case jvm.Value(type=jvm.Array(), value = value):
             ArrayToReference = jvm.Value(jvm.Reference(), value) #our system only deals with int float and reference

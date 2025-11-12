@@ -19,15 +19,13 @@ class Sign:
         return Sign(self.values & other.values)
  
     @staticmethod
-    def abstract(values: set[int]):
-
-        if  isinstance(values, int):
-            values = {values}
-        return Sign(
-            {"+" for v in values if v > 0}
-            | {"-" for v in values if v < 0}
-            | {"0" for v in values if v == 0}
-        )
+    def abstract(value: int) -> "Sign":
+        if value > 0:
+            return Sign({"+"})
+        elif value < 0:
+            return Sign({"-"})
+        else:
+            return Sign({"0"})
  
     def __contains__(self, value: int) -> bool:
         if value > 0:
