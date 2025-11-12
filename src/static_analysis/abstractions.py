@@ -20,6 +20,9 @@ class Sign:
  
     @staticmethod
     def abstract(values: set[int]):
+
+        if  isinstance(values, int):
+            values = {values}
         return Sign(
             {"+" for v in values if v > 0}
             | {"-" for v in values if v < 0}
@@ -34,128 +37,65 @@ class Sign:
             return "-" in self.values
 
         if value == 0:
-            return "-" in self.values
+            return "0" in self.values
         
-    def binary_add(av1, av2):
-        print(f"add: {av1=} {av2=}")
-        outvalues = set()
-        if(av1.values == [] or av2.values == []):
-            pass
-        else:
-            for x in av1.values:
-                for y in av2.values:
-                    print(f"x:{x}")
-                    print(f"y:{y}")
-                    match (x, y):
-                        case ("+", "+"):
-                            outvalues.add("+")
-                        case ("+", "-"):
-                            outvalues.add("-")
-                            outvalues.add("+")
-                            outvalues.add("0")
-                        case ("+", "0"):
-                            outvalues.add("+")
-                        case ("-", "+"):
-                            outvalues.add("-")
-                            outvalues.add("+")
-                            outvalues.add("0")
-                        case ("-", "-"):
-                            outvalues.add("-")
-                        case ("-", "0"):
-                            outvalues.add("-")
-                        case ("0", "+"):
-                            outvalues.add("+")
-                        case ("0", "-"):
-                            outvalues.add("-")
-                        case ("0", "0"):
-                            outvalues.add("0")
-            return Sign(outvalues) #Any function that uses yield becomes a generator, not a normal function.
-
-    def binary_div(av1, av2):
-        print(f"div: {av1=} {av2=}")
-        outvalues = set()
-        for x in av1.values:
-            for y in av2.values:
-                match (x, y):
-                    case ("+", "+"):
-                        outvalues.add("+") #otherwise we would return an empty set
-                    case ("+", "-"):
-                        outvalues.add("-")
-                    case ("+", "0"):
-                        yield "divide by zero"
-                    case ("-", "+"):
-                        outvalues.add("-")
-                    case ("-", "-"):
-                        outvalues.add("-")
-                    case ("-", "0"):
-                        yield "divide by zero"
-                    case ("0", "+"):
-                        outvalues.add("0")
-                    case ("0", "-"):
-                        outvalues.add("0")
-                    case ("0", "0"):
-                        outvalues.add("0")
-        return Sign(outvalues)
-
-    def binary_sub(av1, av2):
-        print(f"div: {av1=} {av2=}")
-        outvalues = set()
-        for x in av1.values:
-            for y in av2.values:
-                match (x, y):
-                    case ("+", "+"):
-                        outvalues.add("-")
-                        outvalues.add("+")
-                        outvalues.add("0")
-                    case ("+", "-"):
-                        outvalues.add("+")
-                    case ("+", "0"):
-                        outvalues.add("+")
-                    case ("-", "+"):
-                        outvalues.add("-")
-                        outvalues.add("+")
-                        outvalues.add("0")
-                    case ("-", "-"):
-                        outvalues.add("-")
-                        outvalues.add("+")
-                        outvalues.add("0") 
-                    case ("-", "0"):
-                        outvalues.add("+")
-                    case ("0", "+"):
-                        outvalues.add("-")
-                        outvalues.add("0")
-                    case ("0", "-"):
-                        outvalues.add("0")
-                        outvalues.add("+") 
-                    case ("0", "0"):
-                        outvalues.add("0")
-        return Sign(outvalues)
+    def sign_add(x, y): #lookup table for sign addition
+        if x == "0": return {y}
+        if y == "0": return {x}
+        if x == y: return {x}
+        return {"+", "-", "0"} 
     
-    def binary_mul(av1, av2):
-        print(f"div: {av1=} {av2=}")
-        outvalues = set()
-        for x in av1.values:
-            for y in av2.values:
-                match (x, y):
-                    case ("+", "+"):
-                        outvalues.add("+")
-                    case ("+", "-"):
-                        outvalues.add("-")
-                    case ("+", "0"):
-                        outvalues.add("0")
-                    case ("-", "+"):
-                        outvalues.add("-")
-                    case ("-", "-"):
-                        outvalues.add("-")
-                    case ("-", "0"):
-                        outvalues.add("0")
-                    case ("0", "+"):
-                        outvalues.add("0")
-                    case ("0", "-"):
-                        outvalues.add("0")
-                    case ("0", "0"):
-                        outvalues.add("0")
-        return Sign(outvalues)
+    def sign_div(x, y): # lookup table for sign division
+        if y == "0":
+            return Sign.top().values
+        if x == "0":
+            return {"0"}
+        if x == y:
+            return {"+"} 
+        else:
+            return {"-"} 
+
+    def sign_sub(x, y): #lookup table for sign subtraction
+        if y == "0":
+            return {x}
+        if x == "0":
+            return {"-"} if y == "+" else {"+"}
+        if x == y:
+            return {"+", "-", "0"}
+        if x == "+" and y == "-":
+            return {"+"}
+        if x == "-" and y == "+":
+            return {"-"}
+        return {"+", "-", "0"}    
+    
+    def sign_mul(x, y): # lookup table for sign multiplication
+        if "0" in (x, y):
+            return {"0"}
+        if x == y:
+            return {"+"}
+        else:
+            return {"-"}
+        
+    @staticmethod
+    def binary_op(a, b, op): #op is a function
+        """
+        Perform a binary operation over two abstract signs.
+
+        Args:
+            a, b: Sign instances (each with .values like {"+", "-", "0"})
+            op: function taking two concrete signs ('+', '-', '0') → set[str]
+
+        Returns:
+            A new Sign containing all possible resulting signs.
+        """
+        
+        result = set()
+        for x in a.values:
+            for y in b.values:
+                for z in op(x, y):
+                    
+                    result.add(z)
+        return Sign(result)
 
 @dataclass
 class Parity:

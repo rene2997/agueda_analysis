@@ -4,6 +4,7 @@ from jpamb import jvm
 from dataclasses import dataclass
 import sys
 from loguru import logger
+from abstractions import Sign
 
 MAX_ITERATIONS = 1000000
 
@@ -66,7 +67,6 @@ class Stack[T]:
     
 class OperandStack(Stack[jvm.Value]):
     def push(self, value):
-        assert value.type in [jvm.Int(), jvm.Float(), jvm.Reference()]
         return super().push(value)
 
 suite = jpamb.Suite()
@@ -93,110 +93,6 @@ class AState[AV]:
 
     def __str__(self):
         return f"{self.heap} {self.frames}"
-    
-
-@dataclass
-class Sign:
-    values: set[str]
-    @staticmethod
-    def top():
-        return Sign({"+", "-", "0"})
- 
-    def __le__(self, other) -> bool:
-        return self.values <= other.values
- 
-    def join(self, other): #Also called or
-        return Sign(self.values | other.values)
-    
-    def meet(self, other): #Also called and
-        return Sign(self.values & other.values)
- 
-    @staticmethod
-    def abstract(values: set[int]):
-        return Sign(
-            {"+" for v in values if v > 0}
-            | {"-" for v in values if v < 0}
-            | {"0" for v in values if v == 0}
-        )
- 
-    def __contains__(self, value: int) -> bool:
-        if value > 0:
-            return "+" in self.values
-
-        if value < 0:
-            return "-" in self.values
-
-        if value == 0:
-            return "-" in self.values
-        
-
-@dataclass
-class Parity:
-    values: set[str]
-    @staticmethod
-    def top():
-        return Parity({"even", "odd"})
- 
-    def __le__(self, other) -> bool:
-        return self.values <= other.values
- 
-    def join(self, other):
-        return Parity(self.values | other.values)
-    
-    def meet(self, other):
-        return Parity(self.values & other.values) #use & because it's doing set logic not boolean logic
- 
-    @staticmethod
-    def abstract(values: set[int]):
-        return Parity(
-            {"even" for v in values if (v % 2 == 0)}
-            | {"odd" for v in values if (v % 2 == 1)}
-        )
- 
-    def __contains__(self, value: int) -> bool:
-        if v % 2 == 0:
-            return "even" in self.values
-
-        if v % 2 == 1:
-            return "odd" in self.values
-
-
-@dataclass
-class Interval:
-    start: int
-    end: int
-    @staticmethod
-    def top():
-        return Interval({-sys.maxsize, sys.maxsize})
-    
-    def bot():
-        return Interval({sys.maxsize, -sys.maxsize})
- 
-    def __le__(self, other) -> bool:
-        return self.start >= other.start and self.start <= other.values
- 
-    def join(self, other):
-        start = min(self.start, other.start)
-        end = max(self.end, other.end)
-        return Interval(start, end)
-    
-    def meet(self, other):
-        start = max(self.start, other.start)
-        end = min(self.end, other.end)
-        return Interval(start, end)
- 
-    @staticmethod
-    def abstract(s, e):
-        return Interval(
-            start = s,
-            end = e #should return [2,2] if it gets 2 as an input           
-        )
- 
-    def __contains__(self, value: int) -> bool:
-       if (self.start <= value) and (value <= self.end):
-           return True
-       else:
-           return False
         
 def many_step(state : dict[PC, AState | str]) -> dict[PC, AState | str]:
   new_state = dict(state)
@@ -214,46 +110,28 @@ def step(state: AState) -> AState | str:
 
     match opr:
         case jvm.Push(value=v):
-            frame.stack.push(v)
+            av = Sign.abstract(v)
+            logger.debug(f"value being pushed is: {av}")
+            frame.stack.push(av)
             frame.pc += 1
             return state
-
-        case jvm.Get(static=s, field=f): # only static int fields
-            frame.stack.push(jvm.Value.int(0)) #pushing s to the stack
-            frame.pc += 1
-            return state 
-
-        case jvm.Boolean():
-            frame.stack.push("Z")
-            frame.pc += 1
-            return state
-        case jvm.Ifz(condition=c, target=t):
-            v = frame.stack.pop()
-            assert v.type == jvm.Int()
-            match c:
-                case "ne":
-                    jump = v.value != 0
-                case "eq":
-                    jump = v.value == 0
-                case "gt":
-                    jump = v.value > 0
-                case "ge":
-                    jump = v.value >= 0
-                case "lt":
-                    jump = v.value < 0
-                case "le":
-                    jump = v.value <= 0
-                case _:
-                    raise NotImplementedError(str(c))
-            if jump:
-                frame.pc.offset = t
-            else:
-                frame.pc += 1
-            return state 
         
         case jvm.Load(type=t, index=i):
             v = frame.locals[i]
+            v = Sign.abstract(v)
+            logger.debug(f"value being loaded is: {v}")
             frame.stack.push(v)
+            frame.pc += 1
+            return state
+        
+        case jvm.Binary(operant=jvm.BinaryOpr.Div):
+            v2, v1 = frame.stack.pop(), frame.stack.pop()
+            logger.debug(f"frame.stack: {frame.stack}")
+            logger.debug(f"v2: {v2}")
+            logger.debug(f"v1: {v1}")
+            if v2 == 0:
+                return "divide by zero"
+            frame.stack.push(Sign.binary_op(v1,v2,Sign.sign_div))
             frame.pc += 1
             return state
         
@@ -273,18 +151,21 @@ for i, v in enumerate(input.values):
     print(i, v, v.type, getattr(v, "value", None))
     match v:
         case jvm.Value(type=jvm.Reference(value = value)):
-            v = (Sign.abstract(value), Parity.abstract(value), Interval.abstract(value))
+            v = (Sign.abstract(value))
+
         case jvm.Value(type=jvm.Float(value = value)):
-            v = (Sign.abstract(value), Parity.abstract(value), Interval.abstract(value))
+            v = (Sign.abstract(value))
+
         case jvm.Value(type=jvm.Boolean(), value = value):
             BoolToInt= 1 if value else 0
-            v = (Sign.abstract({BoolToInt}), Parity.abstract({BoolToInt}), Interval.abstract(BoolToInt, BoolToInt))
+            v = (Sign.abstract({BoolToInt}))
+
         case jvm.Value(type=jvm.Int(), value= value):
-            v = (Sign.abstract(value), Parity.abstract(value), Interval.abstract(value))
+            v = (Sign.abstract(value))
 
         case jvm.Value(type=jvm.Array(), value = value):
             ArrayToReference = jvm.Value(jvm.Reference(), value) #our system only deals with int float and reference
-            v = (Sign.abstract({ArrayToReference}), Parity.abstract({ArrayToReference}), Interval.abstract({ArrayToReference}))
+            v = (Sign.abstract({ArrayToReference}))
         #case jvm.Value(type=jvm.Char()):
         case _:
             assert False, f"Do not know how to handle {v}"
