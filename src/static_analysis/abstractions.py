@@ -1,6 +1,77 @@
 from dataclasses import dataclass
 from typing import List, TypeVar, Generic
 from abc import ABC, abstractmethod
+from abstract_interpreter import Stack, PerVarFrame
+
+@dataclass
+class AState[AV]:
+    heap: dict[int, AV]#their locals
+    frames: Stack[PerVarFrame]#thier stack
+
+    def top():
+        return "unreachable!(Top not defined for this abstraction)"
+
+    def __le__(self, other) -> bool:
+        if len(self.frames.items) > len(other.frames.items):
+            return False
+        
+        #compare stack elements from the frames from the top
+        for a, b in zip(reversed(self.frames.items), reversed(other.frames.items)):
+            if not a._le_(b):
+                return False
+            
+        # compare heap variables pointwise
+        for a, b in zip(self.heap.values(), other.heap.values()):
+            if not a._le_(b):
+                return False
+            
+        return True
+    
+    def meet(self, other):
+        m = max(len(self.heap), len(other.heap))
+        return AState({
+            
+        })
+    
+    @classmethod
+    def bottom(cls):
+        return cls(
+            heap={},
+            frames=Stack.empty()
+        )        
+    
+    def __str__(self):
+        return f"{self.heap} {self.frames}"       
+
+    def join(self, other: AState) -> AState:
+        joined_locals = {}
+        all_keys = set(self.heap) | set(other.heap)
+
+        for k in all_keys:
+            value1 = self.locals.get(k)
+            value2 = other.locals.get(k)
+            if value1 is None:
+                joined_locals[k] = value2
+            elif value2 is None:
+                joined_locals[k] = value1
+            else:
+                joined_locals[k] = value1.join(value2)  # call join on the AV type
+
+        pad = Sign.bottom()
+        stack_max_len = max(len(self.stack.items), len(other.stack.items))
+
+        joined_stack = []
+
+        for i in range(stack_max_len):
+            a = self.stack.items[i] if i < len(self.stack.items) else pad
+            b = other.stack.items[i] if i < len(other.stack.items) else pad
+            joined_stack.append(a.join(b))
+        
+        return AState(
+            heap={joined_locals},
+            frames=Stack(joined_stack)
+        )
+ 
 
 @dataclass
 class Sign:
@@ -8,14 +79,17 @@ class Sign:
     @staticmethod
     def top():
         return Sign({"+", "-", "0"})
+    
+    def bottom():
+        return Sign({})
  
     def __le__(self, other) -> bool:
         return self.values <= other.values
  
-    def __or__(self, other) -> bool:
+    def join(self, other) -> bool:
         return Sign(self.values | other.values)
     
-    def __and__(self, other) -> bool:
+    def meet(self, other) -> bool:
         return Sign(self.values & other.values)
  
     @staticmethod
@@ -143,44 +217,7 @@ class Parity:
 
 #from_set: helper that unions multiple concrete values into one abstract value
 
-class Abstraction(ABC):
 
-    @classmethod
-    @abstractmethod
-    def bottom(self):
-        return self
-    
-    @classmethod
-    @abstractmethod
-    def top(self):
-        return self
-    
-    @abstractmethod
-    def is_le(self, other):
-        return bool
-    
-    @abstractmethod
-    def join(self, other):
-        return self
-    
-    @abstractmethod
-    def meet(self, other):
-        return self
-    
-    @abstractmethod
-    def from_value(self, value: int):
-        return self
-    
-    @abstractmethod
-    def contains(self, value: int) -> bool:
-        return bool
-
-    @classmethod
-    def from_set(cls, values):
-        result = cls.bottom() # calls Sign.bottom(), Interval.bottom(), etc.
-        for v in values:
-            result = result.join(cls.from_value(v)) # calls subclass's from_value
-        return result
 
 @dataclass
 class Sign(Abstraction, Executable):
@@ -505,4 +542,44 @@ class State(Generic[T], Abstraction):
         s_stack = ", ".join(str(v) for v in self.stack)
         s_locals = ", ".join(str(v) for v in self.locals)
         return f"Stack: [{s_stack}], Locals: [{s_locals}]"
+
+
+class Abstraction(ABC):
+
+    @classmethod
+    @abstractmethod
+    def bottom(self):
+        return self
+    
+    @classmethod
+    @abstractmethod
+    def top(self):
+        return self
+    
+    @abstractmethod
+    def is_le(self, other):
+        return bool
+    
+    @abstractmethod
+    def join(self, other):
+        return self
+    
+    @abstractmethod
+    def meet(self, other):
+        return self
+    
+    @abstractmethod
+    def from_value(self, value: int):
+        return self
+    
+    @abstractmethod
+    def contains(self, value: int) -> bool:
+        return bool
+
+    @classmethod
+    def from_set(cls, values):
+        result = cls.bottom() # calls Sign.bottom(), Interval.bottom(), etc.
+        for v in values:
+            result = result.join(cls.from_value(v)) # calls subclass's from_value
+        return result
 """

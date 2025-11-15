@@ -4,7 +4,7 @@ from jpamb import jvm
 from dataclasses import dataclass
 import sys
 from loguru import logger
-from abstractions import Sign
+from abstractions import Sign, AState
 
 MAX_ITERATIONS = 1000000
 
@@ -83,22 +83,30 @@ class PerVarFrame[AV]:
         return f"<{{{locals}}}, {self.stack}, {self.pc}>"
 
     @classmethod
-    def from_method(cls, method: jvm.AbsMethodID) -> "PerVarFrame":
+    def from_method(cls, method: jvm.AbsMethodID) -> PerVarFrame:
         return PerVarFrame({}, OperandStack.empty(), PC(method, 0))
-
-@dataclass
-class AState[AV]:
-    heap: dict[int, AV]
-    frames: Stack[PerVarFrame]
-
-    def __str__(self):
-        return f"{self.heap} {self.frames}"
-        
+    
+    def join(self, other: PerVarFrame) -> PerVarFrame:
+        joined_locals = {}
+        allKeys = set(self.locals) | set(other.locals)
+        for k in allKeys:
+            value1 = self.locals.get(k)
+            value2 = other.locals.get(k)
+            if value1 is None:
+                allKeys(k) = value2
+            elif value2 is None:
+                allKeys(k) = value1
+            else: 
+                allKeys(k) = Sign.join(value1, value2)
+        stackMaxLen = max(self.stack.items.__len__, other.stack.items.__len__)
+        localsMaxLen = max(self.locals.__len__, other.locals.__len__)
+        return
+    
 def many_step(state : dict[PC, AState | str]) -> dict[PC, AState | str]:
   new_state = dict(state)
   for k, v in state.items():
       for s in step(v):
-        new_state[s.pc] |= s
+        AState.join(new_state[s.pc])
   return new_state
 
 def step(state: AState) -> AState | str:
@@ -155,6 +163,7 @@ def step(state: AState) -> AState | str:
                         return state
                     else:
                         return "ok"
+                    
                 case jvm.Reference():
                     v1 = frame.stack.pop()
                     state.frames.pop()
