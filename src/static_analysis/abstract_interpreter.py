@@ -4,7 +4,7 @@ from jpamb import jvm
 from dataclasses import dataclass
 import sys
 from loguru import logger
-from abstractions import Sign, AState
+from static_analysis.abstractions import Sign, AState
 
 MAX_ITERATIONS = 1000000
 
@@ -83,21 +83,21 @@ class PerVarFrame[AV]:
         return f"<{{{locals}}}, {self.stack}, {self.pc}>"
 
     @classmethod
-    def from_method(cls, method: jvm.AbsMethodID) -> PerVarFrame:
+    def from_method(cls, method: jvm.AbsMethodID):
         return PerVarFrame({}, OperandStack.empty(), PC(method, 0))
     
-    def join(self, other: PerVarFrame) -> PerVarFrame:
+    def join(self, other):
         joined_locals = {}
         allKeys = set(self.locals) | set(other.locals)
         for k in allKeys:
             value1 = self.locals.get(k)
             value2 = other.locals.get(k)
             if value1 is None:
-                allKeys(k) = value2
+                allKeys[k] = value2
             elif value2 is None:
-                allKeys(k) = value1
+                allKeys[k] = value1
             else: 
-                allKeys(k) = Sign.join(value1, value2)
+                allKeys[k] = Sign.join(value1, value2)
         stackMaxLen = max(self.stack.items.__len__, other.stack.items.__len__)
         localsMaxLen = max(self.locals.__len__, other.locals.__len__)
         return

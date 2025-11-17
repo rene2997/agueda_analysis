@@ -1,8 +1,101 @@
 from dataclasses import dataclass
-from typing import List, TypeVar, Generic
-from abc import ABC, abstractmethod
-from abstract_interpreter import Stack, PerVarFrame
+from jpamb import jvm
 
+@dataclass
+class PC:
+    method: jvm.AbsMethodID
+    offset: int
+
+    def __iadd__(self, delta):
+        self.offset += delta
+        return self
+
+    def __add__(self, delta):
+        return PC(self.method, self.offset + delta)
+
+    def __str__(self):
+        return f"{self.method}:{self.offset}"
+   
+@dataclass
+class Stack[T]:
+    items: list[T]
+
+    def __bool__(self) -> bool:
+        return len(self.items) > 0
+
+    @classmethod
+    def empty(cls):
+        return cls([])
+
+    def peek(self) -> T:
+        return self.items[-1]
+
+    def pop(self) -> T:
+        return self.items.pop(-1)
+
+    def push(self, value):
+        self.items.append(value)
+        return self
+
+    def __str__(self):
+        if not self:
+            return "ϵ"
+        return "".join(f"{v}" for v in self.items)
+    
+class OperandStack(Stack[jvm.Value]):
+    def push(self, value):
+        return super().push(value)
+
+@dataclass
+class PerVarFrame[AV]:
+    locals: dict[int, AV]
+    stack: Stack[AV]
+    pc: PC
+
+    def __str__(self):
+        locals = ", ".join(f"{k}:{v}" for k, v in sorted(self.locals.items()))
+        return f"<{{{locals}}}, {self.stack}, {self.pc}>"
+
+    @classmethod
+    def from_method(cls, method: jvm.AbsMethodID):
+        return PerVarFrame({}, OperandStack.empty(), PC(method, 0))
+    
+    def join(self, other):
+        joined_locals = {}
+        allKeys = set(self.locals) | set(other.locals)
+
+        for k in allKeys:
+            value1 = self.locals.get(k)
+            value2 = other.locals.get(k)
+            if value1 is None:
+                joined_locals[k] = value2
+            elif value2 is None:
+                joined_locals[k] = value1
+            else:
+                joined_locals[k] = value1.join(value2)
+
+        # join the operand stacks
+        stackMaxLen = max(len(self.stack.items), len(other.stack.items))
+        joined_stack_items = []
+
+        pad = Sign.bottom()  # if AV = Sign this works, otherwise you should generalize
+
+        for i in range(stackMaxLen):
+            a = self.stack.items[i] if i < len(self.stack.items) else pad
+            b = other.stack.items[i] if i < len(other.stack.items) else pad
+            joined_stack_items.append(a.join(b))
+
+        joined_stack = Stack(joined_stack_items)
+
+        #should we join the 2 PCs? I have no idea
+        #joined_pc = self.pc.join(other.pc)
+
+        return PerVarFrame(
+            locals=joined_locals,
+            stack=joined_stack,
+            pc=self.pc
+        )
+ 
 @dataclass
 class AState[AV]:
     heap: dict[int, AV]#their locals
@@ -43,13 +136,13 @@ class AState[AV]:
     def __str__(self):
         return f"{self.heap} {self.frames}"       
 
-    def join(self, other: AState) -> AState:
+    def join(self, other):
         joined_locals = {}
         all_keys = set(self.heap) | set(other.heap)
 
         for k in all_keys:
-            value1 = self.locals.get(k)
-            value2 = other.locals.get(k)
+            value1 = self.heap.get(k)
+            value2 = other.heap.get(k)
             if value1 is None:
                 joined_locals[k] = value2
             elif value2 is None:
@@ -58,17 +151,17 @@ class AState[AV]:
                 joined_locals[k] = value1.join(value2)  # call join on the AV type
 
         pad = Sign.bottom()
-        stack_max_len = max(len(self.stack.items), len(other.stack.items))
+        stack_max_len = max(len(self.frames.items), len(other.frames.items))
 
         joined_stack = []
 
         for i in range(stack_max_len):
-            a = self.stack.items[i] if i < len(self.stack.items) else pad
-            b = other.stack.items[i] if i < len(other.stack.items) else pad
+            a = self.frames.items[i] if i < len(self.frames.items) else pad
+            b = other.frames.items[i] if i < len(other.frames.items) else pad
             joined_stack.append(a.join(b))
         
         return AState(
-            heap={joined_locals},
+            heap=joined_locals,
             frames=Stack(joined_stack)
         )
  
