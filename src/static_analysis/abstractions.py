@@ -60,10 +60,16 @@ class PerVarFrame[AV]:
     def from_method(cls, method: jvm.AbsMethodID):
         return PerVarFrame({}, OperandStack.empty(), PC(method, 0))
     
+    def copy(self):
+        return PerVarFrame(
+            locals=self.locals.copy(),
+            stack=Stack(self.stack.items.copy()),
+            pc=PC(self.pc.method, self.pc.offset)
+        )
+    
     def join(self, other):
         joined_locals = {}
         allKeys = set(self.locals) | set(other.locals)
-
         for k in allKeys:
             value1 = self.locals.get(k)
             value2 = other.locals.get(k)
@@ -71,30 +77,18 @@ class PerVarFrame[AV]:
                 joined_locals[k] = value2
             elif value2 is None:
                 joined_locals[k] = value1
-            else:
-                joined_locals[k] = value1.join(value2)
-
-        # join the operand stacks
-        stackMaxLen = max(len(self.stack.items), len(other.stack.items))
+            else: 
+                joined_locals[k] = Sign.join(value1, value2)
+        len1 = len(self.stack.items)
+        len2 = len(other.stack.items)
+        stackMaxLen = max(len1, len2)
         joined_stack_items = []
-
-        pad = Sign.bottom()  # if AV = Sign this works, otherwise you should generalize
-
         for i in range(stackMaxLen):
-            a = self.stack.items[i] if i < len(self.stack.items) else pad
-            b = other.stack.items[i] if i < len(other.stack.items) else pad
-            joined_stack_items.append(a.join(b))
-
+            value1 = self.stack.items[i] if i < len1 else Sign.bottom()
+            value2 = other.stack.items[i] if i < len2 else Sign.bottom()
+            joined_stack_items.append(Sign.join(value1, value2))
         joined_stack = Stack(joined_stack_items)
-
-        #should we join the 2 PCs? I have no idea
-        #joined_pc = self.pc.join(other.pc)
-
-        return PerVarFrame(
-            locals=joined_locals,
-            stack=joined_stack,
-            pc=self.pc
-        )
+        return PerVarFrame(joined_locals, joined_stack, self.pc)
  
 @dataclass
 class AState[AV]:
@@ -134,7 +128,13 @@ class AState[AV]:
         )        
     
     def __str__(self):
-        return f"{self.heap} {self.frames}"       
+        return f"{self.heap} {self.frames}"   
+
+    def copy(self):
+        return AState(
+            heap=self.heap.copy(),
+            frames=Stack([frame.copy() for frame in self.frames.items])
+        )    
 
     def join(self, other):
         joined_locals = {}
@@ -186,13 +186,14 @@ class Sign:
         return Sign(self.values & other.values)
  
     @staticmethod
-    def abstract(value: int) -> "Sign":
-        if value > 0:
-            return Sign({"+"})
-        elif value < 0:
-            return Sign({"-"})
-        else:
-            return Sign({"0"})
+    def abstract(values: set[int]):
+        if  isinstance(values, int):
+            values = {values}
+        return Sign(
+            {"+" for v in values if v > 0}
+            | {"-" for v in values if v < 0}
+            | {"0" for v in values if v == 0}
+        )
  
     def __contains__(self, value: int) -> bool:
         if value > 0:

@@ -4,7 +4,7 @@ from jpamb import jvm
 from dataclasses import dataclass
 import sys
 from loguru import logger
-from static_analysis.abstractions import Sign, AState
+from abstractions import Sign, AState, PerVarFrame
 
 MAX_ITERATIONS = 1000000
 
@@ -72,44 +72,33 @@ class OperandStack(Stack[jvm.Value]):
 suite = jpamb.Suite()
 bc = Bytecode(suite, dict())
 
-@dataclass
-class PerVarFrame[AV]:
-    locals: dict[int, AV]
-    stack: Stack[AV]
-    pc: PC
+"""
+def many_step(state: dict[PC, AState | str]) -> dict[PC, AState | str]:
+    new_state = dict(state)
 
-    def __str__(self):
-        locals = ", ".join(f"{k}:{v}" for k, v in sorted(self.locals.items()))
-        return f"<{{{locals}}}, {self.stack}, {self.pc}>"
+    for pc, st in state.items():
+        successors = step(st)
 
-    @classmethod
-    def from_method(cls, method: jvm.AbsMethodID):
-        return PerVarFrame({}, OperandStack.empty(), PC(method, 0))
-    
-    def join(self, other):
-        joined_locals = {}
-        allKeys = set(self.locals) | set(other.locals)
-        for k in allKeys:
-            value1 = self.locals.get(k)
-            value2 = other.locals.get(k)
-            if value1 is None:
-                allKeys[k] = value2
-            elif value2 is None:
-                allKeys[k] = value1
-            else: 
-                allKeys[k] = Sign.join(value1, value2)
-        stackMaxLen = max(self.stack.items.__len__, other.stack.items.__len__)
-        localsMaxLen = max(self.locals.__len__, other.locals.__len__)
-        return
-    
-def many_step(state : dict[PC, AState | str]) -> dict[PC, AState | str]:
-  new_state = dict(state)
-  for k, v in state.items():
-      for s in step(v):
-        AState.join(new_state[s.pc])
-  return new_state
+        for succ in successors:
 
-def step(state: AState) -> AState | str:
+            # If error string or "ok"
+            if isinstance(succ, str):
+                new_state[pc] = succ
+                continue
+
+            # We have a successor AState
+            succ_pc = succ.frames.peek().pc
+
+            # If pc not already in map → insert succ
+            if succ_pc not in new_state:
+                new_state[succ_pc] = succ
+            else:
+                new_state[succ_pc] = new_state[succ_pc].join(succ)
+
+    return new_state
+"""
+
+def step(state: AState) -> list[AState | str]:
     assert isinstance(state, AState), f"expected frame but got {state}"
     frame = state.frames.peek()
     opr = bc[frame.pc]
@@ -120,28 +109,38 @@ def step(state: AState) -> AState | str:
         case jvm.Push(value=v):
             logger.debug(f"v is: {v}")
             av = Sign.abstract(v.value)
-            frame.stack.push(av)
-            frame.pc += 1
-            return state
+            new = state.copy()
+            newf = new.frames.peek()
+            newf.stack.push(av)
+            newf.pc += 1
+            return [new]
         
         case jvm.Load(type=t, index=i):
             v = frame.locals[i]
             logger.debug(f"value being loaded is: {v}")
-            frame.stack.push(v)
-            frame.pc += 1
-            return state
+            new = state.copy()
+            newf = new.frames.peek()
+            newf.stack.push(v)
+            newf.pc += 1
+            return [new]
         
         case jvm.Binary(operant=jvm.BinaryOpr.Div):
             v2, v1 = frame.stack.pop(), frame.stack.pop()
             logger.debug(f"frame.stack: {frame.stack}")
             logger.debug(f"v2: {v2}")
             logger.debug(f"v1: {v1}")
+
             for v in v2.values:
                 if v == '0':
-                    return "divide by zero"
-            frame.stack.push(Sign.binary_op(v1,v2,Sign.sign_div))
-            frame.pc += 1
-            return state
+                    return ["divide by zero"]
+            
+            new = state.copy()
+            newf = new.frames.peek()
+            newf.stack.pop()
+            newf.stack.pop()
+            newf.stack.push(Sign.binary_op(v1, v2, Sign.sign_div))
+            newf.pc += 1
+            return [new]
         
         case jvm.Return(type=t): # return instruction for void
             match t:
@@ -215,15 +214,18 @@ for i, v in enumerate(input.values):
     logger.debug(f"v has the value: {v}")
     frame.locals[i] = v
 
+
 state = AState({}, Stack.empty().push(frame))
 
-for x in range(MAX_ITERATIONS): # prevent infinite loop
-    state = step(state)
-    if isinstance(state, str):
-        print(state)
-        break
-else:
-    print("*")
+for _ in range(MAX_ITERATIONS): # prevent infinite loop
+    st = manystep(state)
+    for s in st:
+        if isinstance(s, str):
+            final.append(s)
+            print(s)
+            break
+        else:
+            state.join(s)
 
 
 def number_of_args():
