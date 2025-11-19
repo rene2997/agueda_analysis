@@ -6,7 +6,7 @@ import sys
 from loguru import logger
 from abstractions import Sign, AState, PerVarFrame
 
-MAX_ITERATIONS = 1000000
+MAX_ITERATIONS = 1000
 
 @dataclass
 class PC:
@@ -102,7 +102,7 @@ def step(state: AState) -> list[AState | str]:
     assert isinstance(state, AState), f"expected frame but got {state}"
     frame = state.frames.peek()
     opr = bc[frame.pc]
-    #print(f"@@COV {frame.pc.method} {frame.pc.offset}")
+    print(f"@@COV {frame.pc.method} {frame.pc.offset}")
     logger.debug(f"STEP {opr}\n{state}")
 
     match opr:
@@ -125,7 +125,10 @@ def step(state: AState) -> list[AState | str]:
             return [new]
         
         case jvm.Binary(operant=jvm.BinaryOpr.Div):
-            v2, v1 = frame.stack.pop(), frame.stack.pop()
+            new = state.copy()
+            newf = new.frames.peek()
+            v2 = newf.stack.pop()
+            v1 = newf.stack.pop()
             logger.debug(f"frame.stack: {frame.stack}")
             logger.debug(f"v2: {v2}")
             logger.debug(f"v1: {v1}")
@@ -134,10 +137,6 @@ def step(state: AState) -> list[AState | str]:
                 if v == '0':
                     return ["divide by zero"]
             
-            new = state.copy()
-            newf = new.frames.peek()
-            newf.stack.pop()
-            newf.stack.pop()
             newf.stack.push(Sign.binary_op(v1, v2, Sign.sign_div))
             newf.pc += 1
             return [new]
@@ -214,18 +213,26 @@ for i, v in enumerate(input.values):
     logger.debug(f"v has the value: {v}")
     frame.locals[i] = v
 
-
 state = AState({}, Stack.empty().push(frame))
+final = []
+for i in range(MAX_ITERATIONS): 
+    successors = step(state)
+    
+    if not successors:
+        # Interpreter stopped (e.g., if step returns an empty list for unhandled instructions)
+        break
+    
+    # 1. Handle Termination (Error or Success)
+    if isinstance(successors[0], str):
+        final.append(successors[0])
+        print("divide by zero")
+        break
+        
+    # 2. Crucially, handle state advancement
+    # This assumes non-branching instructions return only one successor.
+    state = successors[0] 
 
-for _ in range(MAX_ITERATIONS): # prevent infinite loop
-    st = manystep(state)
-    for s in st:
-        if isinstance(s, str):
-            final.append(s)
-            print(s)
-            break
-        else:
-            state.join(s)
+logger.debug(f"The following final states {final} is possible in {MAX_ITERATIONS}")
 
 
 def number_of_args():

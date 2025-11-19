@@ -88,6 +88,7 @@ class PerVarFrame[AV]:
             value2 = other.stack.items[i] if i < len2 else Sign.bottom()
             joined_stack_items.append(Sign.join(value1, value2))
         joined_stack = Stack(joined_stack_items)
+
         return PerVarFrame(joined_locals, joined_stack, self.pc)
  
 @dataclass
@@ -171,10 +172,10 @@ class Sign:
     values: set[str]
     @staticmethod
     def top():
-        return Sign({"+", "-", "0"})
+        return Sign(("+", "-", "0"))
     
     def bottom():
-        return Sign({})
+        return Sign(set())
  
     def __le__(self, other) -> bool:
         return self.values <= other.values
