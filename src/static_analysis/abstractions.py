@@ -69,8 +69,8 @@ class PerVarFrame[AV]:
     
     def join(self, other):
         joined_locals = {}
-        allKeys = set(self.locals) | set(other.locals)
-        for k in allKeys:
+        all_keys = set(self.locals) | set(other.locals)
+        for k in all_keys:
             value1 = self.locals.get(k)
             value2 = other.locals.get(k)
             if value1 is None:
@@ -81,15 +81,17 @@ class PerVarFrame[AV]:
                 joined_locals[k] = Sign.join(value1, value2)
         len1 = len(self.stack.items)
         len2 = len(other.stack.items)
-        stackMaxLen = max(len1, len2)
+        stack_max_len = max(len1, len2)
         joined_stack_items = []
-        for i in range(stackMaxLen):
+        for i in range(stack_max_len):
             value1 = self.stack.items[i] if i < len1 else Sign.bottom()
             value2 = other.stack.items[i] if i < len2 else Sign.bottom()
             joined_stack_items.append(Sign.join(value1, value2))
         joined_stack = Stack(joined_stack_items)
+        max_pc_offset = max(self.pc.offset, other.pc.offset)
+        joined_pc = PC(self.pc.method, max_pc_offset)
 
-        return PerVarFrame(joined_locals, joined_stack, self.pc)
+        return PerVarFrame(joined_locals, joined_stack, joined_pc)
  
 @dataclass
 class AState[AV]:

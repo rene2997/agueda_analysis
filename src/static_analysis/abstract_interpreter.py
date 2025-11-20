@@ -6,7 +6,7 @@ import sys
 from loguru import logger
 from abstractions import Sign, AState, PerVarFrame
 
-MAX_ITERATIONS = 1000
+MAX_ITERATIONS = 10
 
 @dataclass
 class PC:
@@ -217,21 +217,12 @@ state = AState({}, Stack.empty().push(frame))
 final = []
 for i in range(MAX_ITERATIONS): 
     successors = step(state)
-    
-    if not successors:
-        # Interpreter stopped (e.g., if step returns an empty list for unhandled instructions)
-        break
-    
-    # 1. Handle Termination (Error or Success)
     if isinstance(successors[0], str):
         final.append(successors[0])
         print("divide by zero")
         break
-        
-    # 2. Crucially, handle state advancement
-    # This assumes non-branching instructions return only one successor.
-    state = successors[0] 
-
+    # This assumes non-branching instructions return only one successor. Must be replaced by joining
+    state = state.join(successors[0])
 logger.debug(f"The following final states {final} is possible in {MAX_ITERATIONS}")
 
 
