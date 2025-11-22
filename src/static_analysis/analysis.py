@@ -205,6 +205,5 @@ def main():
     analyzer.register(NullTool())
     analyzer.run_baseline()
 
-
 if __name__ == "__main__":
     main()
