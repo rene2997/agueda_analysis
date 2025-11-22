@@ -6,7 +6,7 @@ import sys
 from loguru import logger
 from abstractions import Sign, AState, PerVarFrame
 
-MAX_ITERATIONS = 10
+MAX_ITERATIONS = 1000
 
 @dataclass
 class PC:
@@ -23,7 +23,6 @@ class PC:
     def __str__(self):
         return f"{self.method}:{self.offset}"
 
-
 @dataclass
 class Bytecode:
     suite: jpamb.Suite
@@ -37,7 +36,6 @@ class Bytecode:
             self.methods[pc.method] = opcodes
 
         return opcodes[pc.offset]
-
 
 @dataclass
 class Stack[T]:
@@ -71,32 +69,6 @@ class OperandStack(Stack[jvm.Value]):
 
 suite = jpamb.Suite()
 bc = Bytecode(suite, dict())
-
-"""
-def many_step(state: dict[PC, AState | str]) -> dict[PC, AState | str]:
-    new_state = dict(state)
-
-    for pc, st in state.items():
-        successors = step(st)
-
-        for succ in successors:
-
-            # If error string or "ok"
-            if isinstance(succ, str):
-                new_state[pc] = succ
-                continue
-
-            # We have a successor AState
-            succ_pc = succ.frames.peek().pc
-
-            # If pc not already in map → insert succ
-            if succ_pc not in new_state:
-                new_state[succ_pc] = succ
-            else:
-                new_state[succ_pc] = new_state[succ_pc].join(succ)
-
-    return new_state
-"""
 
 def step(state: AState) -> list[AState | str]:
     assert isinstance(state, AState), f"expected frame but got {state}"
@@ -198,7 +170,6 @@ def step(state: AState) -> list[AState | str]:
             a.help()
             raise NotImplementedError(f"Don't know how to handle: {a!r}")
         
-
 logger.remove()
 logger.add(sys.stderr, format="[{level}] {message}")
 
@@ -235,81 +206,51 @@ for i, v in enumerate(input.values):
     frame.locals[i] = v
 
 state = AState({}, Stack.empty().push(frame))
-final = [] #what is final for?
-for i in range(MAX_ITERATIONS): 
-    successors = step(state)
-    #logger.debug(f"SUCCESSORS: {successors[0]}")
-    #if isinstance(successors, AState):
-    #    state = successors
-    if isinstance(successors[0], str):
-        final.append(successors[0])
-        print(f"{successors[0]}")
-        break
-    # This assumes non-branching instructions return only one successor. Must be replaced by joining
-    state = state.join(successors[0])
-logger.debug(f"The following final states {successors[0]} is possible in {MAX_ITERATIONS}")
 
+start_pc = state.frames.peek().pc.offset
+analysis_map = {start_pc: state}
+worklist = [start_pc] #the worklist is a todo list. when we find a new branch or update the interpreter, we add the pc of it's successor to the list
+final = [] #holds final states
+instruction_count = 0
+while worklist:
+
+    if instruction_count >= MAX_ITERATIONS:
+        logger.warning(f"Analysis terminated: Fixed bound of {MAX_ITERATIONS} transitions reached.")
+        break
+
+    current_pc = worklist.pop(0)
+    current_state = analysis_map[current_pc]
+
+    successors = step(current_state)
+    instruction_count += 1
+
+    for succ in successors:
+        if isinstance(succ, str):
+            final.append(succ)
+            continue
+
+        succ_pc = succ.frames.peek().pc.offset
+        old_state = analysis_map.get(succ_pc)
+
+        if old_state is None:
+            analysis_map[succ_pc] = succ
+            worklist.append(succ_pc)
+        else:
+            new_joined_state = old_state.join(succ)
+            if not new_joined_state.is_le(old_state):
+                analysis_map[succ_pc] = new_joined_state
+                worklist.append(succ_pc)
+
+logger.debug(f"Total instructions executed: {instruction_count}")
+
+if 'divide by zero' in final:
+    print("divide by zero")
+elif 'ok' in final:
+    print("ok")
+elif final:
+    print(f"Analysis finished, encountered terminal states: {set(final)}")
+else:
+    print("Analysis terminated by reaching the fixed bound before finding a conclusive state.")
 
 def number_of_args():
     return
-
-"""
-@dataclass
-class AbstractBool:
-    values: set[bool]
-    @staticmethod
-    def top() -> Self:
-        return AbstractBool({True, False})
-
-    @staticmethod
-    def __le__(self, other) -> bool:
-        return self.values <= other.values
- 
-    @staticmethod
-    def join(self, other) -> bool:
-        return self.values | other.values
- 
-    @staticmethod
-    def abstract(values: set[bool]) -> Self:
-        return AbstractBool(values)
- 
-    def __contains__(self, value: int) -> bool:
-        return value in self.values
-
-000 | push:I 1
-001 | load:I 0
-002 | binary:I div
-003 | return:I
-
-
- 
-n = Sign.top()
-locals = [n]
-stack = []
-print(locals, stack)
-# push:I 1
-stack.append(Sign.abstract({1}))
-print(locals, stack)
-# load:I 0
-stack.append(locals[0])
-print(locals, stack)
-# binary:I div
-
-def binary_div(av1, av2):
-    print(f"div: {av1=} {av2=}")
-    outvalues = set()
-    for x in av1.values:
-        for y in av2.values:
-            match (x, y):
-                case ("+", "+"):
-                    outvalues.add("+")
-                case ("+", "-"):
-                    outvalues.add("-")
-                case ("+", "0"):
-                    yield "divide by zero"
-    yield Sign(outvalues)
-for vals in binary_div(stack.pop(0), stack.pop(0)):
-    print("!", vals)
-print(locals, stack)
-
-"""
