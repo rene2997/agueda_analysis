@@ -4,24 +4,9 @@ from jpamb import jvm
 from dataclasses import dataclass
 import sys
 from loguru import logger
-from abstractions import Sign, AState, PerVarFrame
+from abstractions import Sign, AState, PerVarFrame, PC, OperandStack, Stack
 
 MAX_ITERATIONS = 1000
-
-@dataclass
-class PC:
-    method: jvm.AbsMethodID
-    offset: int
-
-    def __iadd__(self, delta):
-        self.offset += delta
-        return self
-
-    def __add__(self, delta):
-        return PC(self.method, self.offset + delta)
-
-    def __str__(self):
-        return f"{self.method}:{self.offset}"
 
 @dataclass
 class Bytecode:
@@ -36,36 +21,6 @@ class Bytecode:
             self.methods[pc.method] = opcodes
 
         return opcodes[pc.offset]
-
-@dataclass
-class Stack[T]:
-    items: list[T]
-
-    def __bool__(self) -> bool:
-        return len(self.items) > 0
-
-    @classmethod
-    def empty(cls):
-        return cls([])
-
-    def peek(self) -> T:
-        return self.items[-1]
-
-    def pop(self) -> T:
-        return self.items.pop(-1)
-
-    def push(self, value):
-        self.items.append(value)
-        return self
-
-    def __str__(self):
-        if not self:
-            return "ϵ"
-        return "".join(f"{v}" for v in self.items)
-    
-class OperandStack(Stack[jvm.Value]):
-    def push(self, value):
-        return super().push(value)
 
 suite = jpamb.Suite()
 bc = Bytecode(suite, dict())
@@ -162,9 +117,71 @@ def step(state: AState) -> list[AState | str]:
                         return ["ok"]
             
         case jvm.Get(static=s, field=f): # only static int fields
-            frame.stack.push(Sign.abstract(s)) #pushing s to the stack (which is basically a true)
+            frame.stack.push(Sign.abstract(0)) #pushing s to the stack (which is basically a true)
             frame.pc += 1
             return state 
+        case jvm.Boolean():
+            frame.stack.push("Z")
+            frame.pc += 1
+            return state
+        case jvm.Ifz(condition=c, target=t):
+            v = frame.stack.pop()
+            vals = v.values
+            print(f"vals in Ifz: {vals}")
+            #assert v.type == jvm.Int()
+            match c:
+                case "ne":
+                    jump = not ('0' in vals and len(vals) == 1)
+                    #print(f"jump in ne: {jump}")
+                case "eq":
+                    jump = '0' in vals
+                    #print(f"jump in eq: {jump}")
+                case "gt":
+                    jump = '+' in vals
+                    #print(f"jump in gt: {jump}")
+                case "ge":
+                    jump = '+' in vals or '0' in vals
+                    #print(f"jump in ge: {jump}")
+                case "lt":
+                    jump = '-' in vals
+                    #print(f"jump in lt: {jump}")
+                case "le":
+                    jump = '-' in vals or '0' in vals
+                    #print(f"jump in le: {jump}")
+                case _:
+                    raise NotImplementedError(str(c))
+            if jump:
+                frame.pc.offset = t
+            else:
+                frame.pc += 1
+            return state
+        case jvm.New(classname=c):
+            return ["assertion error"]
+        
+        case jvm.If(condition=c, target=t): # if condition for integers
+            v2 = frame.stack.pop()   # TOP
+            v1 = frame.stack.pop()   # BELOW TOP
+            #assert v1.type == jvm.Int() and v2.type == jvm.Int()
+            jump = False
+            for val1 in v1.values:
+                for val2 in v2.values:
+                    match c:
+                        case "ne": jump |= val1 != val2
+                        case "eq": jump |= val1 == val2
+                        case "gt": jump |= val1 > val2
+                        case "ge": jump |= val1 >= val2
+                        case "lt": jump |= val1 < val2
+                        case "le": jump |= val1 <= val2
+                        case _:    raise NotImplementedError(str(c))
+                    if jump:  # If the first value doesn't already match there's no need to check the others
+                        break
+                if jump:
+                    break
+            if jump:
+                frame.pc.offset = t
+            else:
+                frame.pc += 1
+            return state
          
         case a:
             a.help()
@@ -213,6 +230,7 @@ worklist = [start_pc] #the worklist is a todo list. when we find a new branch or
 final = [] #holds final states
 instruction_count = 0
 while worklist:
+    logger.debug(f"WORKLIST: {worklist}")
 
     if instruction_count >= MAX_ITERATIONS:
         logger.warning(f"Analysis terminated: Fixed bound of {MAX_ITERATIONS} transitions reached.")
@@ -224,27 +242,50 @@ while worklist:
     successors = step(current_state)
     instruction_count += 1
 
-    for succ in successors:
-        if isinstance(succ, str):
-            final.append(succ)
-            continue
+    if not isinstance(successors, list):
+        successors = [successors] #converts succers in a list if it already isn't (it's an AState)
+        #logger.debug(f"SEI QUI")
+        for succ in successors:
+            if isinstance(succ, str):
+                final.append(succ)
+                continue
 
-        succ_pc = succ.frames.peek().pc.offset
-        old_state = analysis_map.get(succ_pc)
+            succ_pc = succ.frames.peek().pc.offset
+            old_state = analysis_map.get(succ_pc)
 
-        if old_state is None:
-            analysis_map[succ_pc] = succ
-            worklist.append(succ_pc)
-        else:
-            new_joined_state = old_state.join(succ)
-            if not new_joined_state.is_le(old_state):
-                analysis_map[succ_pc] = new_joined_state
+            if old_state is None:
+                analysis_map[succ_pc] = succ
                 worklist.append(succ_pc)
+            else:
+                new_joined_state = old_state.join(succ)
+                if not new_joined_state.is_le(old_state):
+                    analysis_map[succ_pc] = new_joined_state
+                    worklist.append(succ_pc)
+    else:
+        #logger.debug(f"SEI LI")
+        for succ in successors:
+            if isinstance(succ, str):
+                final.append(succ)
+                continue
+
+            succ_pc = succ.frames.peek().pc.offset
+            old_state = analysis_map.get(succ_pc)
+
+            if old_state is None:
+                analysis_map[succ_pc] = succ
+                worklist.append(succ_pc)
+            else:
+                new_joined_state = old_state.join(succ)
+                if not new_joined_state.is_le(old_state):
+                    analysis_map[succ_pc] = new_joined_state
+                    worklist.append(succ_pc)
 
 logger.debug(f"Total instructions executed: {instruction_count}")
 
 if 'divide by zero' in final:
     print("divide by zero")
+elif 'assertion error' in final:
+    print("assertion error")
 elif 'ok' in final:
     print("ok")
 elif final:
