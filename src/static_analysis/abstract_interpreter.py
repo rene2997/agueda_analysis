@@ -90,7 +90,7 @@ def step(state: AState) -> list[AState | str]:
                         frame = state.frames.peek()
                         frame.stack.push(v1)
                         frame.pc += 1
-                        return state
+                        return [state]
                     else:
                         #print("ok")
                         return ["ok"]
@@ -99,7 +99,7 @@ def step(state: AState) -> list[AState | str]:
                     if state.frames:
                         frame = state.frames.peek()
                         frame.pc += 1
-                        return state
+                        return [state]
                     else:
                         #print("ok")
                         return ["ok"]
@@ -111,7 +111,7 @@ def step(state: AState) -> list[AState | str]:
                         frame = state.frames.peek()
                         frame.stack.push(v1)
                         frame.pc += 1
-                        return state
+                        return [state]
                     else:
                         #print("ok")
                         return ["ok"]
@@ -119,11 +119,11 @@ def step(state: AState) -> list[AState | str]:
         case jvm.Get(static=s, field=f): # only static int fields
             frame.stack.push(Sign.abstract(0)) #pushing s to the stack (which is basically a true)
             frame.pc += 1
-            return state 
+            return [state] 
         case jvm.Boolean():
             frame.stack.push("Z")
             frame.pc += 1
-            return state
+            return [state]
         case jvm.Ifz(condition=c, target=t):
             v = frame.stack.pop()
             vals = v.values
@@ -154,7 +154,7 @@ def step(state: AState) -> list[AState | str]:
                 frame.pc.offset = t
             else:
                 frame.pc += 1
-            return state
+            return [state]
         case jvm.New(classname=c):
             return ["assertion error"]
         
@@ -181,7 +181,7 @@ def step(state: AState) -> list[AState | str]:
                 frame.pc.offset = t
             else:
                 frame.pc += 1
-            return state
+            return [state]
          
         case a:
             a.help()
@@ -242,43 +242,22 @@ while worklist:
     successors = step(current_state)
     instruction_count += 1
 
-    if not isinstance(successors, list):
-        successors = [successors] #converts succers in a list if it already isn't (it's an AState)
-        #logger.debug(f"SEI QUI")
-        for succ in successors:
-            if isinstance(succ, str):
-                final.append(succ)
-                continue
+    for succ in successors:
+        if isinstance(succ, str):
+            final.append(succ)
+            continue
 
-            succ_pc = succ.frames.peek().pc.offset
-            old_state = analysis_map.get(succ_pc)
+        succ_pc = succ.frames.peek().pc.offset
+        old_state = analysis_map.get(succ_pc)
 
-            if old_state is None:
-                analysis_map[succ_pc] = succ
+        if old_state is None:
+            analysis_map[succ_pc] = succ
+            worklist.append(succ_pc)
+        else:
+            new_joined_state = old_state.join(succ)
+            if not new_joined_state.is_le(old_state):
+                analysis_map[succ_pc] = new_joined_state
                 worklist.append(succ_pc)
-            else:
-                new_joined_state = old_state.join(succ)
-                if not new_joined_state.is_le(old_state):
-                    analysis_map[succ_pc] = new_joined_state
-                    worklist.append(succ_pc)
-    else:
-        #logger.debug(f"SEI LI")
-        for succ in successors:
-            if isinstance(succ, str):
-                final.append(succ)
-                continue
-
-            succ_pc = succ.frames.peek().pc.offset
-            old_state = analysis_map.get(succ_pc)
-
-            if old_state is None:
-                analysis_map[succ_pc] = succ
-                worklist.append(succ_pc)
-            else:
-                new_joined_state = old_state.join(succ)
-                if not new_joined_state.is_le(old_state):
-                    analysis_map[succ_pc] = new_joined_state
-                    worklist.append(succ_pc)
 
 logger.debug(f"Total instructions executed: {instruction_count}")
 
