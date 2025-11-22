@@ -67,6 +67,35 @@ class PerVarFrame[AV]:
             pc=PC(self.pc.method, self.pc.offset)
         )
     
+    def is_le(self, other) -> bool:
+        # 1. PC check (optional, but robust if you only join/compare at the same PC)
+        if self.pc.offset != other.pc.offset or self.pc.method != other.pc.method:
+            return False 
+
+        # 2. Locals comparison (pointwise over the union of all keys)
+        all_keys = set(self.locals) | set(other.locals)
+        for k in all_keys:
+            # Use Sign.bottom() if a local is not defined in one frame
+            val_self = self.locals.get(k, Sign.bottom()) 
+            val_other = other.locals.get(k, Sign.bottom()) 
+            
+            # Check if self <= other for this local
+            # We assume Sign implements __le__ or is_le
+            if not val_self.__le__(val_other):
+                return False
+
+        # 3. Stack comparison
+        # For standard JVM abstract interpretation, stacks at a join point must have the same height.
+        if len(self.stack.items) != len(other.stack.items):
+             return False 
+             
+        # Compare stack items pointwise (bottom to top)
+        for a, b in zip(self.stack.items, other.stack.items):
+            if not a.is_le(b): # Assuming AV (Sign) implements __le__
+                return False
+                
+        return True
+    
     def join(self, other):
         joined_locals = {}
         all_keys = set(self.locals) | set(other.locals)
@@ -88,10 +117,8 @@ class PerVarFrame[AV]:
             value2 = other.stack.items[i] if i < len2 else Sign.bottom()
             joined_stack_items.append(Sign.join(value1, value2))
         joined_stack = Stack(joined_stack_items)
-        max_pc_offset = max(self.pc.offset, other.pc.offset)
-        joined_pc = PC(self.pc.method, max_pc_offset)
 
-        return PerVarFrame(joined_locals, joined_stack, joined_pc)
+        return PerVarFrame(joined_locals, joined_stack, self.pc)
  
 @dataclass
 class AState[AV]:
@@ -101,20 +128,31 @@ class AState[AV]:
     def top():
         return "unreachable!(Top not defined for this abstraction)"
 
-    def __le__(self, other) -> bool:
+    def is_le(self, other) -> bool:
+        # 1. Frame Stack Comparison: self.frames must be shorter or equal length
         if len(self.frames.items) > len(other.frames.items):
             return False
         
-        #compare stack elements from the frames from the top
+        # Compare frames from the top
         for a, b in zip(reversed(self.frames.items), reversed(other.frames.items)):
-            if not a._le_(b):
+            # CALL THE NEW PerVarFrame.is_le METHOD
+            if not a.is_le(b):
                 return False
+                
+        # 2. Heap Comparison (pointwise over the union of all keys)
+        all_keys = set(self.heap) | set(other.heap)
+        
+        for k in all_keys:
+            # Safely get value, defaulting to bottom if the key is missing
+            # Assuming Sign.bottom() is available and correct
+            val_self = self.heap.get(k, Sign.bottom()) 
+            val_other = other.heap.get(k, Sign.bottom())
             
-        # compare heap variables pointwise
-        for a, b in zip(self.heap.values(), other.heap.values()):
-            if not a._le_(b):
+            # Check if self <= other for this heap variable
+            # Assuming the abstract value (Sign) implements the __le__ method
+            if not val_self.is_le(val_other): 
                 return False
-            
+                
         return True
     
     def meet(self, other):
@@ -179,7 +217,7 @@ class Sign:
     def bottom():
         return Sign(set())
  
-    def __le__(self, other) -> bool:
+    def is_le(self, other) -> bool:
         return self.values <= other.values
  
     def join(self, other) -> bool:
