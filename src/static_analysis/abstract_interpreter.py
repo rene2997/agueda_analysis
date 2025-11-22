@@ -107,7 +107,7 @@ def step(state: AState) -> list[AState | str]:
 
     match opr:
         case jvm.Push(value=v):
-            logger.debug(f"v is: {v}")
+            logger.debug(f"v in PUSH is: {v}")
             av = Sign.abstract(v.value)
             new = state.copy()
             newf = new.frames.peek()
@@ -117,7 +117,7 @@ def step(state: AState) -> list[AState | str]:
         
         case jvm.Load(type=t, index=i):
             v = frame.locals[i]
-            logger.debug(f"value being loaded is: {v}")
+            logger.debug(f"v in LOAD is: {v}")
             new = state.copy()
             newf = new.frames.peek()
             newf.stack.push(v)
@@ -141,6 +141,19 @@ def step(state: AState) -> list[AState | str]:
             newf.pc += 1
             return [new]
         
+        case jvm.Binary(operant=jvm.BinaryOpr.Sub):
+            new = state.copy()
+            newf = new.frames.peek()
+            v2 = newf.stack.pop()
+            v1 = newf.stack.pop()
+            logger.debug(f"frame.stack: {frame.stack}")
+            logger.debug(f"v2: {v2}")
+            logger.debug(f"v1: {v1}")
+            
+            newf.stack.push(Sign.binary_op(v1, v2, Sign.sign_sub))
+            newf.pc += 1
+            return [new]
+        
         case jvm.Return(type=t): # return instruction for void
             match t:
                 case jvm.Int():
@@ -152,7 +165,8 @@ def step(state: AState) -> list[AState | str]:
                         frame.pc += 1
                         return state
                     else:
-                        return "ok"
+                        #print("ok")
+                        return ["ok"]
                 case None:
                     state.frames.pop()
                     if state.frames:
@@ -160,7 +174,8 @@ def step(state: AState) -> list[AState | str]:
                         frame.pc += 1
                         return state
                     else:
-                        return "ok"
+                        #print("ok")
+                        return ["ok"]
                     
                 case jvm.Reference():
                     v1 = frame.stack.pop()
@@ -171,8 +186,14 @@ def step(state: AState) -> list[AState | str]:
                         frame.pc += 1
                         return state
                     else:
-                        return "ok"
+                        #print("ok")
+                        return ["ok"]
             
+        case jvm.Get(static=s, field=f): # only static int fields
+            frame.stack.push(Sign.abstract(s)) #pushing s to the stack (which is basically a true)
+            frame.pc += 1
+            return state 
+         
         case a:
             a.help()
             raise NotImplementedError(f"Don't know how to handle: {a!r}")
@@ -214,16 +235,19 @@ for i, v in enumerate(input.values):
     frame.locals[i] = v
 
 state = AState({}, Stack.empty().push(frame))
-final = []
+final = [] #what is final for?
 for i in range(MAX_ITERATIONS): 
     successors = step(state)
+    #logger.debug(f"SUCCESSORS: {successors[0]}")
+    #if isinstance(successors, AState):
+    #    state = successors
     if isinstance(successors[0], str):
         final.append(successors[0])
-        print("divide by zero")
+        print(f"{successors[0]}")
         break
     # This assumes non-branching instructions return only one successor. Must be replaced by joining
     state = state.join(successors[0])
-logger.debug(f"The following final states {final} is possible in {MAX_ITERATIONS}")
+logger.debug(f"The following final states {successors[0]} is possible in {MAX_ITERATIONS}")
 
 
 def number_of_args():
