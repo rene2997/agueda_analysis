@@ -14,6 +14,20 @@ class SymExpr(ABC):
     """
     pass
 
+@dataclass(slots=True)
+class SymArrayRef(SymExpr):
+    name: str
+
+    def __str__(self):
+        return f"ArrayRef({self.name})"
+
+@dataclass(slots=True)
+class SymArrayElem(SymExpr):
+    array: str
+    index: SymExpr
+
+    def __str__(self):
+        return f"{self.array}[{self.index}]"
 
 @dataclass(slots=True)
 class SymInt(SymExpr):

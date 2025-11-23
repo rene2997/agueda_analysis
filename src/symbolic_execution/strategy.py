@@ -8,50 +8,64 @@ from .symstate import SymbolicState
 
 class WorklistStrategy(ABC):
     """
-    Abstract interface for picking the next state to explore.
+    Base strategy interface for symbolic execution.
+    The executor calls:
+       - init(initial_state)
+       - next(worklist)
+       - add(worklist, state)
+       - empty(worklist)
     """
 
     @abstractmethod
-    def push(self, state: SymbolicState) -> None: ...
+    def init(self, initial: SymbolicState):
+        ...
 
     @abstractmethod
-    def pop(self) -> SymbolicState: ...
+    def next(self, worklist):
+        ...
 
     @abstractmethod
-    def empty(self) -> bool: ...
+    def add(self, worklist, state: SymbolicState):
+        ...
+
+    @abstractmethod
+    def empty(self, worklist) -> bool:
+        ...
 
 
 class DFSStrategy(WorklistStrategy):
     """
-    Depth-First Search: use a simple stack.
+    Depth-first search → stack
     """
 
-    def __init__(self) -> None:
-        self._stack: List[SymbolicState] = []
+    def init(self, initial: SymbolicState):
+        return [initial]  # stack
 
-    def push(self, state: SymbolicState) -> None:
-        self._stack.append(state)
+    def next(self, worklist):
+        return worklist.pop()  # LIFO
 
-    def pop(self) -> SymbolicState:
-        return self._stack.pop()
+    def add(self, worklist, state: SymbolicState):
+        worklist.append(state)
+        return worklist
 
-    def empty(self) -> bool:
-        return not self._stack
+    def empty(self, worklist) -> bool:
+        return len(worklist) == 0
 
 
 class BFSStrategy(WorklistStrategy):
     """
-    Breadth-First Search: use a FIFO queue.
+    Breadth-first search → queue
     """
 
-    def __init__(self) -> None:
-        self._queue: List[SymbolicState] = []
+    def init(self, initial: SymbolicState):
+        return [initial]  # queue
 
-    def push(self, state: SymbolicState) -> None:
-        self._queue.append(state)
+    def next(self, worklist):
+        return worklist.pop(0)  # FIFO
 
-    def pop(self) -> SymbolicState:
-        return self._queue.pop(0)
+    def add(self, worklist, state: SymbolicState):
+        worklist.append(state)
+        return worklist
 
-    def empty(self) -> bool:
-        return not self._queue
+    def empty(self, worklist) -> bool:
+        return len(worklist) == 0

@@ -9,18 +9,27 @@ from .symstate import SymbolicState
 @dataclass(slots=True)
 class Finding:
     """
-    Minimal stand-alone finding type.
-
-    If your project already has a shared Finding abstraction,
-    you can adapt this class or create adapter functions here.
+    Represents a discovered error path in symbolic execution.
     """
     kind: str
-    message: str
-    state: Optional[SymbolicState] = None
-    model: Optional[Dict[str, Any]] = None
+    pc: int
+    path_constraint: Any
+    return_value: Any = None
 
-    def __str__(self) -> str:
-        return f"[{self.kind}] {self.message}"
+    @staticmethod
+    def from_state(state: SymbolicState) -> "Finding":
+        """
+        Convert a terminated error state into a Finding.
+        """
+        return Finding(
+            kind=state.error,
+            pc=state.pc,
+            path_constraint=state.path_constraint.copy(),
+            return_value=getattr(state, "return_value", None),
+        )
+
+    def __repr__(self) -> str:
+        return f"Finding(kind={self.kind}, pc={self.pc})"
 
 
 @dataclass(slots=True)

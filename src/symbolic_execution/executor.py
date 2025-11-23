@@ -1,75 +1,59 @@
 from __future__ import annotations
 
-from time import time
-from typing import List, Optional
-
+from typing import List
 from .config import SEConfig
 from .findings import Finding
 from .solver_z3 import Solver
-from .strategy import DFSStrategy, BFSStrategy, WorklistStrategy
+from .strategy import WorklistStrategy
 from .symstate import SymbolicState
 from .jvm_frontend import JVMFrontend
 
 
 class SymbolicExecutor:
     """
-    High-level driver that:
-      * Manages worklist/state exploration
-      * Applies depth/state/time limits
-      * Uses the JVMFrontend to step states
-      * Optionally consults the solver for feasibility / models
+    Main symbolic executor loop:
+    - pulls states from the strategy’s worklist
+    - prunes unsat / over-depth states
+    - delegates JVM instruction semantics to JVMFrontend
+    - collects Findings when terminated with errors
     """
-
     def __init__(
         self,
         frontend: JVMFrontend,
-        solver: Optional[Solver] = None,
-        config: Optional[SEConfig] = None,
-    ) -> None:
+        config: SEConfig,
+        solver: Solver,
+        strategy: WorklistStrategy,
+    ):
         self.frontend = frontend
-        self.solver = solver or Solver()
-        self.config = config or SEConfig()
+        self.config = config
+        self.solver = solver
+        self.strategy = strategy
 
-        if self.config.strategy == "bfs":
-            self.strategy: WorklistStrategy = BFSStrategy()
-        else:
-            self.strategy = DFSStrategy()
+    def run(self, initial_state: SymbolicState) -> List[Finding]:
+        worklist = self.strategy.init(initial_state)
+        findings: List[Finding] = []
 
-        self.findings: List[Finding] = []
+        while worklist:
+            state = self.strategy.next(worklist)
 
-    def run(self) -> List[Finding]:
-        """
-        Explore states starting from the entry method.
+            # 1. Prune on depth
+            if self.config.max_depth is not None:
+                if state.path_constraint.depth() > self.config.max_depth:
+                    continue
 
-        Returns a list of collected findings (e.g., assertion failures, div-by-zero).
-        """
-        start_time = time()
-        initial = self.frontend.initial_state(self.config)
-        self.strategy.push(initial)
-
-        explored = 0
-
-        while not self.strategy.empty():
-            if explored >= self.config.max_states:
-                break
-            if time() - start_time > self.config.timeout_seconds:
-                break
-
-            state = self.strategy.pop()
-            explored += 1
-
-            if state.terminated:
+            # 2. Prune on UNSAT
+            if not self.solver.is_sat(state.path_constraint):
                 continue
 
-            # Simple depth control: use pc as a proxy, or extend state with a depth field.
-            # For now we skip strict depth checks.
+            # 3. Terminated? Record error/finding
+            if state.terminated:
+                if state.error is not None:
+                    findings.append(Finding.from_state(state))
+                continue
+
+            # 4. Expand successor states using JVMFrontEnd
             successors = self.frontend.step(state)
-
             for succ in successors:
-                if succ.error:
-                    # Later you can create specific Finding subclasses based on error kind.
-                    self.findings.append(Finding(kind="error", message=succ.error, state=succ))
-                else:
-                    self.strategy.push(succ)
+                self.strategy.add(worklist, succ)
 
-        return self.findings
+        return findings

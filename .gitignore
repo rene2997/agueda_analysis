@@ -9,5 +9,5 @@
 *.egg-info/
 dist/
 build/
-
-
+tests/
+pytest.ini
