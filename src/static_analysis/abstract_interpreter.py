@@ -212,7 +212,21 @@ def step(state: AState) -> list[AState | str]:
         case jvm.Goto(target=t):
             frame.pc.offset = t 
             return [state]
-         
+        
+        case jvm.Store(type=t, index=i):
+            v = frame.stack.pop()
+            frame.locals[i] = v
+            frame.pc += 1
+            return [state]
+        
+        case jvm.Dup(words=w):
+            v = frame.stack.peek()
+            vf = v.copy()
+            frame.stack.push(vf)
+            frame.stack(v)
+            frame.pc += 1
+            return [state]
+        
         case a:
             a.help()
             raise NotImplementedError(f"Don't know how to handle: {a!r}")
@@ -300,7 +314,7 @@ elif 'ok' in final:
 elif final:
     print(f"Analysis finished, encountered terminal states: {set(final)}")
 else:
-    print("*") #for the forever case
+    print("*") #Analysis terminated by reaching the fixed bound before finding a conclusive state.
 
 def number_of_args():
     return
