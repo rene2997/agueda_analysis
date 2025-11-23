@@ -129,32 +129,51 @@ def step(state: AState) -> list[AState | str]:
             vals = v.values
             print(f"vals in Ifz: {vals}")
             #assert v.type == jvm.Int()
+            jump_possible = False
+            nojump_possible = False
             match c:
                 case "ne":
-                    jump = not ('0' in vals and len(vals) == 1)
+                    jump_possible = not ('0' in vals and len(vals) == 1)
                     #print(f"jump in ne: {jump}")
+                    nojump_possible  = '0' in vals
                 case "eq":
-                    jump = '0' in vals
+                    jump_possible = '0' in vals
                     #print(f"jump in eq: {jump}")
+                    nojump_possible  = any(val != '0' for val in vals)
                 case "gt":
-                    jump = '+' in vals
+                    jump_possible = '+' in vals
                     #print(f"jump in gt: {jump}")
+                    nojump_possible  = '-' in vals or '0' in vals
                 case "ge":
-                    jump = '+' in vals or '0' in vals
+                    jump_possible = '+' in vals or '0' in vals
                     #print(f"jump in ge: {jump}")
+                    nojump_possible  = '-' in vals
                 case "lt":
-                    jump = '-' in vals
+                    jump_possible = '-' in vals
                     #print(f"jump in lt: {jump}")
+                    nojump_possible  = '+' in vals or '0' in vals
                 case "le":
-                    jump = '-' in vals or '0' in vals
+                    jump_possible = '-' in vals or '0' in vals
                     #print(f"jump in le: {jump}")
+                    nojump_possible  = '+' in vals
                 case _:
                     raise NotImplementedError(str(c))
-            if jump:
-                frame.pc.offset = t
-            else:
-                frame.pc += 1
-            return [state]
+                
+            out = []
+            if jump_possible:
+                #jump branch
+                sj = state.copy()
+                jf = sj.frames.peek()
+                jf.pc.offset = t
+                out.append(sj)
+            if nojump_possible:
+                #no-jump branch
+                sn = state.copy()
+                nf = sn.frames.peek()
+                nf.pc += 1
+                out.append(sn)
+            return out
+        
         case jvm.New(classname=c):
             return ["assertion error"]
         
@@ -162,7 +181,8 @@ def step(state: AState) -> list[AState | str]:
             v2 = frame.stack.pop()   # TOP
             v1 = frame.stack.pop()   # BELOW TOP
             #assert v1.type == jvm.Int() and v2.type == jvm.Int()
-            jump = False
+            jump_possible = False
+            nojump_possible = False
             for val1 in v1.values:
                 for val2 in v2.values:
                     match c:
@@ -173,14 +193,24 @@ def step(state: AState) -> list[AState | str]:
                         case "lt": jump |= val1 < val2
                         case "le": jump |= val1 <= val2
                         case _:    raise NotImplementedError(str(c))
-                    if jump:  # If the first value doesn't already match there's no need to check the others
-                        break
-                if jump:
-                    break
-            if jump:
-                frame.pc.offset = t
+                    
+                    jump_possible |= jump
+                    nojump_possible |= not jump
+            out = []
+            if jump_possible:
+                sj = state.copy()
+                jf = sj.frames.peek()
+                jf.pc.offset = t
+                out.append(sj)   
             else:
-                frame.pc += 1
+                sn = state.copy()
+                nf = sn.frames.peek()
+                nf.pc += 1
+                out.append(sj)
+            return out
+        
+        case jvm.Goto(target=t):
+            frame.pc.offset = t 
             return [state]
          
         case a:
@@ -270,7 +300,7 @@ elif 'ok' in final:
 elif final:
     print(f"Analysis finished, encountered terminal states: {set(final)}")
 else:
-    print("Analysis terminated by reaching the fixed bound before finding a conclusive state.")
+    print("*") #for the forever case
 
 def number_of_args():
     return
