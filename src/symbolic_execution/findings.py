@@ -8,9 +8,6 @@ from .symstate import SymbolicState
 
 @dataclass(slots=True)
 class Finding:
-    """
-    Represents a discovered error path in symbolic execution.
-    """
     kind: str
     pc: int
     path_constraint: Any
@@ -18,9 +15,6 @@ class Finding:
 
     @staticmethod
     def from_state(state: SymbolicState) -> "Finding":
-        """
-        Convert a terminated error state into a Finding.
-        """
         return Finding(
             kind=state.error,
             pc=state.pc,

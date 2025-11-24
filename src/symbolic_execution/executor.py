@@ -35,7 +35,7 @@ class SymbolicExecutor:
 
         while worklist:
             state = self.strategy.next(worklist)
-
+            assert isinstance(state, SymbolicState), f"Corrupted state: {state!r}"
             # 1. Prune on depth
             if self.config.max_depth is not None:
                 if state.path_constraint.depth() > self.config.max_depth:
@@ -54,6 +54,7 @@ class SymbolicExecutor:
             # 4. Expand successor states using JVMFrontEnd
             successors = self.frontend.step(state)
             for succ in successors:
+                assert isinstance(succ, SymbolicState), f"Frontend returned non-state: {succ!r}"
                 self.strategy.add(worklist, succ)
 
         return findings

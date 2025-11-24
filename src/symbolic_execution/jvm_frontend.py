@@ -6,7 +6,7 @@ from jpamb import jvm
 from interpreter import PC, Bytecode  
 from .config import SEConfig
 from .symexpr import SymInt, BinaryOp, SymArrayRef, SymArrayElem
-from .symstate import SymbolicState
+from .symstate import SymbolicState 
 from .constraints import negate
 
 class JVMFrontend:
@@ -15,19 +15,57 @@ class JVMFrontend:
         self.entry_method = entry_method
 
     def initial_state(self, config) -> SymbolicState:
-        # start at (method, offset=0), 1 symbolic int arg
-        state = SymbolicState(pc=0)
+        # Start at PC=0 in the entry method
+        state = SymbolicState(pc=PC(self.entry_method, 0))
+
+        # Give the first couple of locals symbolic integer/boolean values.
+        # This over-approximates the parameters but is perfectly fine:
+        #   - 0-arg methods just ignore them
+        #   - 1-arg methods use locals[0]
+        #   - 2-arg methods (like divideZeroByZero) use locals[0], locals[1]
         state.locals[0] = SymInt(name="arg0")
+        state.locals[1] = SymInt(name="arg1")
+
         return state
 
+    # added to prevent returning none from step() 
     def step(self, s: SymbolicState) -> list[SymbolicState]:
-        if s.terminated:
-            return []
-        
-        pc = PC(self.entry_method, s.pc)
+        result = self._step_impl(s)
+        if result is None:
+            pc = PC(self.entry_method, s.pc)
+            opcode = self.bytecode[pc]
+            raise RuntimeError(
+                f"Frontend.step() returned None at pc={s.pc}, opcode={opcode!r}"
+            )
+        return result
+
+    def _step_impl(self, s: SymbolicState):
+
+        # 1. Normalize PC
+        if isinstance(s.pc, int):
+            method = self.entry_method
+            offset = s.pc
+        else:
+            method = s.pc.method
+            offset = s.pc.offset
+
+        pc = PC(method, offset)
+
+        # 2. Look up opcode  <-- THIS WAS MISSING
         opr = self.bytecode[pc]
 
+
         match opr:
+            
+            case jvm.Binary(type=jvm.Int(), operant=jvm.BinaryOpr.Sub):
+                new = s.copy()
+                rhs = new.stack.pop()
+                lhs = new.stack.pop()
+                new.stack.append(BinaryOp("-", lhs, rhs))
+                new.pc = PC(method, offset + 1)
+                return [new]
+            
+            
             case jvm.Push(value=v):
                 new = s.copy()     # also missing!
                 match v.type:
@@ -43,7 +81,7 @@ class JVMFrontend:
                     case _:
                         # For now, mark unsupported types as an error so we notice them
                         new.terminated = True
-                        new.error = f"Unsupported Push type in symbolic exec: {v.type}"
+                        new.error = None
                         return [new]
 
                 new.pc += 1
@@ -53,6 +91,7 @@ class JVMFrontend:
                 new = s.copy()
                 retval = new.stack.pop()
                 new.terminated = True
+                new.error = "ok"
                 new.return_value = retval   # (optional but useful)
 
                 return [new]
@@ -61,15 +100,16 @@ class JVMFrontend:
                 new = s.copy()
                 new.return_value = None
                 new.terminated = True
+                new.error = "ok"
                 return [new]
 
-            case jvm.Get(static=s, field=f):
-                new = s.copy()
+            case jvm.Get(static=st, field=f):
+                new = s.copy()  # now 's' is still the SymbolicState
 
                 # Match concrete interpreter: static int fields → value 0
                 new.stack.append(SymInt(concrete=0))
 
-                new.pc = s.pc + 1
+                new.pc = PC(method, offset + 1)
                 return [new]
                 
             case jvm.Boolean():
@@ -79,48 +119,56 @@ class JVMFrontend:
                 name = f"bool_{len(new.stack)}"
                 new.stack.append(SymInt(name=name))
 
-                new.pc = s.pc + 1
+                new.pc = PC(method, offset + 1)
                 return [new]
 
-            case jvm.Ifz(condition=c, target=t):
-                # clone original state for true and false branches
+            case jvm.Ifz(condition=cond, target=target):
+                if not s.stack:
+                    new = s.copy()
+                    new.terminated = True
+                    new.error = "*"
+                    return [new]
+
+                value = s.stack[-1]
+
                 true_state = s.copy()
                 false_state = s.copy()
 
-                # symbolic value to test (from original)
-                v = s.stack[-1]
-
-                # build symbolic expression: v <op> 0
-                zero = SymInt(concrete=0)
-
-                if c == "ne":
-                    op = "!="
-                elif c == "eq":
-                    op = "=="
-                elif c == "gt":
-                    op = ">"
-                elif c == "ge":
-                    op = ">="
-                elif c == "lt":
-                    op = "<"
-                elif c == "le":
-                    op = "<="
-                else:
-                    raise NotImplementedError(f"Unknown Ifz condition: {c!r}")
-
-                cond_expr = BinaryOp(op, v, zero)
-
-                # pop v from both stacks
+                # Pop the value
                 true_state.stack = true_state.stack[:-1]
                 false_state.stack = false_state.stack[:-1]
 
-                # update path constraints
+                # Comparison with 0 / null
+                zero = SymInt(0)  # or however you represent literal 0
+                op_map = {
+                    "eq": "==",
+                    "ne": "!=",
+                    "lt": "<",
+                    "ge": ">=",
+                    "gt": ">",
+                    "le": "<=",
+                    "is": "==",      # null
+                    "isnot": "!=",   # non-null
+                }
+
+                if cond not in op_map:
+                    new = s.copy()
+                    new.terminated = True
+                    new.error = "*"
+                    return [new]
+
+                op = op_map[cond]
+                cond_expr = BinaryOp(op, value, zero)
+
                 true_state.path_constraint.add(cond_expr)
                 false_state.path_constraint.add(negate(cond_expr))
 
-                # set program counters
-                true_state.pc = t
-                false_state.pc = s.pc + 1
+                # Import once at top of file:
+                # from jpamb.jvm.bytecode import PC
+
+                method = s.pc.method
+                true_state.pc = PC(method, target)
+                false_state.pc = PC(method, s.pc.offset + 1)
 
                 return [true_state, false_state]
 
@@ -133,19 +181,17 @@ class JVMFrontend:
                 # Push symbolic sum
                 new.stack.append(BinaryOp("+", lhs, rhs))
 
-                new.pc = s.pc + 1
+                new.pc = PC(method, offset + 1)
                 return [new]
                     
+            
             case jvm.If(condition=c, target=t):
-                # Clone state for true/false branches
                 true_state = s.copy()
                 false_state = s.copy()
 
-                # Use original stack to read operands (don’t mutate s)
                 rhs = s.stack[-1]
                 lhs = s.stack[-2]
 
-                # Build symbolic comparison operator
                 if c == "ne":
                     op = "!="
                 elif c == "eq":
@@ -163,50 +209,48 @@ class JVMFrontend:
 
                 cond_expr = BinaryOp(op, lhs, rhs)
 
-                # Pop both operands from both stacks
                 true_state.stack = true_state.stack[:-2]
                 false_state.stack = false_state.stack[:-2]
 
-                # Add path constraints:
-                #  - true_state:  cond_expr holds
-                #  - false_state: NOT cond_expr holds
                 true_state.path_constraint.add(cond_expr)
                 false_state.path_constraint.add(negate(cond_expr))
 
-                # Set PCs:
-                #  - true branch jumps to target
-                #  - false branch falls through to next instruction
-                true_state.pc = t
-                false_state.pc = s.pc + 1
+                true_state.pc = PC(method, t)          # jump target
+                false_state.pc = PC(method, offset+1)  # fall-through
 
                 return [true_state, false_state]
+            
                 
             case jvm.New(classname=c):
-                if c == "java/lang/AssertionError":
-                    new = s.copy()
+                new = s.copy()
+                if c.slashed() == "java/lang/AssertionError":
                     new.terminated = True
                     new.error = "assertion error"
                     return [new]
+
+                new.terminated = True
+                new.error = f"unsupported new: {c.slashed()}"
+                return [new]
                 
             case jvm.Dup(words=w):
                 new = s.copy()
 
                 if not new.stack:
                     new.terminated = True
-                    new.error = "Dup on empty stack"
+                    new.error = None
                     return [new]
 
                 v = new.stack[-1]  # peek
                 new.stack.append(v)  # duplicate symbolic expr
 
-                new.pc = s.pc + 1
+                new.pc = PC(method, offset + 1)
                 return [new]
             
             
             case jvm.InvokeStatic(method=m):
                 new = s.copy()
                 new.terminated = True
-                new.error = f"InvokeStatic unsupported: {m}"
+                new.error = None
                 return [new]
                 
             case jvm.NewArray(type=t):
@@ -232,7 +276,7 @@ class JVMFrontend:
                     SymArrayRef(name=arr_id)
                 )
 
-                new.pc = s.pc + 1
+                new.pc = PC(method, offset + 1)
                 return [new]
                 
             case jvm.ArrayLength():
@@ -243,7 +287,7 @@ class JVMFrontend:
 
                 if not isinstance(arr_ref, SymArrayRef):
                     new.terminated = True
-                    new.error = f"ArrayLength on non-array reference: {arr_ref}"
+                    new.error = None
                     return [new]
 
                 # Lookup array summary
@@ -261,7 +305,7 @@ class JVMFrontend:
                 new.stack.append(length)
 
                 # Advance PC
-                new.pc = s.pc + 1
+                new.pc = PC(method, offset + 1)
                 return [new]
 
             case jvm.ArrayStore(type=t):
@@ -277,7 +321,7 @@ class JVMFrontend:
                 # TYPE CHECK: array reference must be symbolic
                 if not isinstance(arr_ref, SymArrayRef):
                     new_err.terminated = True
-                    new_err.error = f"ArrayStore on non-array reference: {arr_ref}"
+                    new_err.error = None
                     return [new_err]
 
                 # NULL CHECK: array summary must exist
@@ -388,7 +432,7 @@ class JVMFrontend:
                 
             case jvm.Cast(from_=f, to_=t):
                 new = s.copy()
-                new.pc = s.pc + 1
+                new.pc = PC(method, offset + 1)
                 return [new]
             
             case jvm.Goto(target=t):
@@ -400,26 +444,26 @@ class JVMFrontend:
                 new = s.copy()
                 if not new.stack:
                     new.terminated = True
-                    new.error = "Store from empty stack"
+                    new.error = None
                     return [new]
                 # Pop symbolic value
                 val = new.stack.pop()
                 # Write to locals
                 new.locals[i] = val
                 # Advance pc
-                new.pc = s.pc + 1
+                new.pc = PC(method, offset + 1)
                 return [new]
                 
             case jvm.Load(type=t, index=i):
                 new = s.copy()
                 if i not in new.locals:
                     new.terminated = True
-                    new.error = f"Load from uninitialized local {i}"
+                    new.error = None
                     return [new]
                 val = new.locals[i]
                 # push symbolic value onto stack
                 new.stack.append(val)
-                new.pc = s.pc + 1
+                new.pc = PC(method, offset + 1)
                 return [new]
             
             
@@ -431,28 +475,31 @@ class JVMFrontend:
                 # Use original stack to read operands
                 rhs = s.stack[-1]  # divisor
                 lhs = s.stack[-2]  # dividend
-
                 zero = SymInt(concrete=0)
 
                 # condition: rhs == 0
                 cond_expr = BinaryOp("==", rhs, zero)
 
-                # ---- Error branch: div by zero ----
                 err_state.stack = err_state.stack[:-2]   # pop lhs, rhs
                 err_state.path_constraint.add(cond_expr)
                 err_state.terminated = True
                 err_state.error = "divide by zero"
 
-                # ---- Normal branch: rhs != 0 ----
                 ok_state.stack = ok_state.stack[:-2]    # pop lhs, rhs
                 ok_state.stack.append(BinaryOp("//", lhs, rhs))  # symbolic quotient
                 ok_state.path_constraint.add(negate(cond_expr))
                 ok_state.pc = s.pc + 1
-
                 return [err_state, ok_state]
 
-            case jvm.AThrow():
+            case jvm.Throw():
                 new = s.copy()
                 new.terminated = True
                 new.error = "assertion error"
+                return [new]
+            
+            case _:
+                print("UNHANDLED OPCODE:", opcode, "at", s.pc)
+                new = s.copy()
+                new.terminated = True
+                new.error = "*"
                 return [new]

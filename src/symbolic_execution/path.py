@@ -24,3 +24,6 @@ class PathConstraint:
 
     def copy(self) -> "PathConstraint":
         return PathConstraint(list(self.constraints))
+    
+    def depth(self):
+        return len(self.constraints)

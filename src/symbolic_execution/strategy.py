@@ -45,6 +45,7 @@ class DFSStrategy(WorklistStrategy):
         return worklist.pop()  # LIFO
 
     def add(self, worklist, state: SymbolicState):
+        assert isinstance(state, SymbolicState), f"Strategy.add got: {state!r}"
         worklist.append(state)
         return worklist
 
