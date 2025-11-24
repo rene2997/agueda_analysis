@@ -11,30 +11,21 @@ def summarize(findings):
     from collections import Counter
 
     counts = Counter()
-
     for f in findings:
         k = f.kind
         if k is None:
-            continue  # completely ignore
-
-        # Group any weird error strings into "*"
+            continue
         if k not in {"ok", "assertion error", "divide by zero", "out of bounds"}:
             k = "*"
-
         counts[k] += 1
 
-    total = sum(counts.values())
-    if total == 0:
-        # nothing interesting reached
-        for label in ["assertion error", "ok", "*", "divide by zero", "out of bounds"]:
-            print(f"{label};0%")
-        return
-
-    def pct(n):
-        return int(round(100 * n / total))
+    # Map “seen at all?” → 100%, otherwise 0%
+    def score(label: str) -> int:
+        return 100 if counts[label] > 0 else 0
 
     for label in ["assertion error", "ok", "*", "divide by zero", "out of bounds"]:
-        print(f"{label};{pct(counts[label])}%")
+        print(f"{label}; {score(label)}%")
+        
 
 
 def main() -> None:
@@ -53,6 +44,8 @@ def main() -> None:
     solver = Solver()
     strategy = DFSStrategy()
 
+    print("DEBUG: use_solver =", config.use_solver)
+    
     executor = SymbolicExecutor(
         frontend=frontend,
         config=config,

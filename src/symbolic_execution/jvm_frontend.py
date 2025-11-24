@@ -17,9 +17,8 @@ class JVMFrontend:
     def initial_state(self, config) -> SymbolicState:
         # Start at PC=0 in the entry method
         state = SymbolicState(pc=PC(self.entry_method, 0))
+        state.depth = 0
 
-        # Give the first couple of locals symbolic integer/boolean values.
-        # This over-approximates the parameters but is perfectly fine:
         #   - 0-arg methods just ignore them
         #   - 1-arg methods use locals[0]
         #   - 2-arg methods (like divideZeroByZero) use locals[0], locals[1]
@@ -67,14 +66,14 @@ class JVMFrontend:
             
             
             case jvm.Push(value=v):
-                new = s.copy()     # also missing!
+                new = s.copy()     
                 match v.type:
                     case jvm.Int():
-                        # Push a concrete integer as a SymInt
+                        # push a concrete integer as a SymInt
                         new.stack.append(SymInt(concrete=v.value))
 
                     case jvm.Boolean():
-                        # Map booleans to 0/1, just like your concrete code does elsewhere
+                        # map booleans to 0/1, just like your concrete code does elsewhere
                         concrete = 1 if v.value else 0
                         new.stack.append(SymInt(concrete=concrete))
 
@@ -186,12 +185,19 @@ class JVMFrontend:
                     
             
             case jvm.If(condition=c, target=t):
+                # Extract PC fields
+                method = s.pc.method
+                offset = s.pc.offset
+
+                # Clone states
                 true_state = s.copy()
                 false_state = s.copy()
 
+                # Operands
                 rhs = s.stack[-1]
                 lhs = s.stack[-2]
 
+                # Translate JVM condition
                 if c == "ne":
                     op = "!="
                 elif c == "eq":
@@ -205,21 +211,49 @@ class JVMFrontend:
                 elif c == "le":
                     op = "<="
                 else:
-                    raise NotImplementedError(f"Unknown If condition: {c!r}")
+                    raise NotImplementedError(f"Unknown If condition: {c}")
 
                 cond_expr = BinaryOp(op, lhs, rhs)
 
+                # Pop operands
                 true_state.stack = true_state.stack[:-2]
                 false_state.stack = false_state.stack[:-2]
 
+                # Add constraints
                 true_state.path_constraint.add(cond_expr)
                 false_state.path_constraint.add(negate(cond_expr))
 
-                true_state.pc = PC(method, t)          # jump target
-                false_state.pc = PC(method, offset+1)  # fall-through
+                # Jump vs fall-through
+                true_state.pc = PC(method, t)
+                false_state.pc = PC(method, offset + 1)
 
                 return [true_state, false_state]
             
+            case jvm.Binary(type=jvm.Int(), operant=jvm.BinaryOpr.Rem):
+                # Integer remainder: lhs % rhs
+                err_state = s.copy()
+                ok_state = s.copy()
+
+                rhs = s.stack[-1]  # divisor
+                lhs = s.stack[-2]  # dividend
+                zero = SymInt(concrete=0)
+
+                # condition: rhs == 0  (mod by zero is also illegal)
+                cond_expr = BinaryOp("==", rhs, zero)
+
+                # Error branch: divide by zero
+                err_state.stack = err_state.stack[:-2]
+                err_state.path_constraint.add(cond_expr)
+                err_state.terminated = True
+                err_state.error = "divide by zero"
+
+                # OK branch: symbolic remainder
+                ok_state.stack = ok_state.stack[:-2]
+                ok_state.stack.append(BinaryOp("%", lhs, rhs))
+                ok_state.path_constraint.add(negate(cond_expr))
+                ok_state.pc = s.pc + 1
+
+                return [err_state, ok_state]
                 
             case jvm.New(classname=c):
                 new = s.copy()
@@ -491,6 +525,18 @@ class JVMFrontend:
                 ok_state.pc = s.pc + 1
                 return [err_state, ok_state]
 
+            case jvm.Binary(type=jvm.Int(), operant=jvm.BinaryOpr.Mul):
+                new = s.copy()
+
+                rhs = new.stack.pop()   # right operand
+                lhs = new.stack.pop()   # left operand
+
+                # Symbolic multiplication
+                new.stack.append(BinaryOp("*", lhs, rhs))
+                new.pc = PC(method, offset + 1)
+                return [new]
+                
+                
             case jvm.Throw():
                 new = s.copy()
                 new.terminated = True
@@ -498,7 +544,7 @@ class JVMFrontend:
                 return [new]
             
             case _:
-                print("UNHANDLED OPCODE:", opcode, "at", s.pc)
+                print("UNHANDLED OPCODE:", opr, "at", s.pc)
                 new = s.copy()
                 new.terminated = True
                 new.error = "*"

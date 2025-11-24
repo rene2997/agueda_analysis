@@ -24,6 +24,7 @@ class SymbolicState:
     stack: List[SymExpr] = field(default_factory=list)
     locals: Dict[int, SymExpr] = field(default_factory=dict)
     path_constraint: PathConstraint = field(default_factory=PathConstraint)
+    depth: int = 0
     terminated: bool = False
     error: Optional[str] = None
     return_value: Optional[Any] = None
