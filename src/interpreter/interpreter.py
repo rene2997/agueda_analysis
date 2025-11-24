@@ -69,8 +69,10 @@ class OperandStack(Stack[jvm.Value]):
         assert value.type in [jvm.Int(), jvm.Float(), jvm.Reference()]
         return super().push(value)
 
+
 suite = jpamb.Suite()
 bc = Bytecode(suite, dict())
+
 
 @dataclass
 class Frame:
@@ -94,7 +96,7 @@ class State:
 
     def __str__(self):
         return f"{self.heap} {self.frames}"
-
+    
 def step(state: State) -> State | str:
     assert isinstance(state, State), f"expected frame but got {state}"
     frame = state.frames.peek()
@@ -117,7 +119,6 @@ def step(state: State) -> State | str:
             frame.stack.push(jvm.Value.int(v1.value // v2.value))
             frame.pc += 1
             return state
-        
         case jvm.Return(type=jvm.Int()): # return instruction for ints
             v1 = frame.stack.pop()
             state.frames.pop()
@@ -261,7 +262,7 @@ def step(state: State) -> State | str:
             else:
                 frame.pc += 1
             return state
-        case jvm.New(classname=c):
+        case jvm.New(classname=c):            
             return "assertion error"
         case jvm.Dup(words=w):
             v = frame.stack.peek()
@@ -374,7 +375,7 @@ def step(state: State) -> State | str:
 
             if array is None:
                 return "null pointer"
-
+            
             if isinstance(array, list) or isinstance(array, tuple):
                 logger.debug(f"TEST 1: {array}")
             
