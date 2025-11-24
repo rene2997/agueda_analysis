@@ -195,18 +195,15 @@ def main():
         return
 
     analyzer = Analyzer(args, src_root=None)
-    # ----- TO IMPLEMENT
+    ## Implement later
     # ast = analyzer.parse_bytecode(args.target)
-    # pc_map = analyzer.identify_hotspots(ast)
-    # analyzer.set_pc_map(pc_map)
-    # -----
+
     analyzer.register(LoopTool())
     analyzer.register(OOBTool())
     analyzer.register(AssertTool())
     analyzer.register(DivZeroTool())
     analyzer.register(NullTool())
     analyzer.run_baseline()
-
 
 if __name__ == "__main__":
     main()

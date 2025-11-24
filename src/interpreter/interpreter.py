@@ -262,8 +262,7 @@ def step(state: State) -> State | str:
             else:
                 frame.pc += 1
             return state
-        case jvm.New(classname=c):
-            
+        case jvm.New(classname=c):            
             return "assertion error"
         case jvm.Dup(words=w):
             v = frame.stack.peek()
@@ -476,39 +475,44 @@ def step(state: State) -> State | str:
 logger.remove()
 logger.add(sys.stderr, format="[{level}] {message}")
 
-methodid, input = jpamb.getcase()
-frame = Frame.from_method(methodid)
-print(type(input), getattr(input, "__dict__", None))
-print(type(input.values), input.values)
-for i, v in enumerate(input.values):
-    print(i, v, v.type, getattr(v, "value", None))
-    match v:
-        case jvm.Value(type=jvm.Reference()):
-            pass
-        case jvm.Value(type=jvm.Float()):
-            pass
-        case jvm.Value(type=jvm.Boolean(), value = value):
-            v= jvm.Value.int(1 if value else 0)
-        case jvm.Value(type=jvm.Int()):
-            pass
-        case jvm.Value(type=jvm.Array(), value = value):
-            v = jvm.Value(jvm.Reference(), value) #our system only deals with int float and reference
-        #case jvm.Value(type=jvm.Char()):
-        case _:
-            assert False, f"Do not know how to handle {v}"
-    logger.debug(f"v has the value: {v}")
-    frame.locals[i] = v
 
-state = State({}, Stack.empty().push(frame))
+def run_concrete() -> None:
+    methodid, input = jpamb.getcase()
+    frame = Frame.from_method(methodid)
+    print(type(input), getattr(input, "__dict__", None))
+    print(type(input.values), input.values)
+    for i, v in enumerate(input.values):
+        print(i, v, v.type, getattr(v, "value", None))
+        match v:
+            case jvm.Value(type=jvm.Reference()):
+                pass
+            case jvm.Value(type=jvm.Float()):
+                pass
+            case jvm.Value(type=jvm.Boolean(), value=value):
+                v = jvm.Value.int(1 if value else 0)
+            case jvm.Value(type=jvm.Int()):
+                pass
+            case jvm.Value(type=jvm.Array(), value=value):
+                v = jvm.Value(jvm.Reference(), value)
+            case _:
+                assert False, f"Do not know how to handle {v}"
+        logger.debug(f"v has the value: {v}")
+        frame.locals[i] = v
 
-for x in range(1000): # prevent infinite loop
-    state = step(state)
-    if isinstance(state, str):
-        print(state)
-        break
-else:
-    print("*")
+    state = State({}, Stack.empty().push(frame))
+
+    for x in range(1000):  # prevent infinite loop
+        state = step(state)
+        if isinstance(state, str):
+            print(state)
+            break
+    else:
+        print("*")
 
 
 def number_of_args():
     return
+
+
+if __name__ == "__main__":
+    run_concrete()
