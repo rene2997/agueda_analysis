@@ -51,34 +51,32 @@ def step(state: AState) -> list[AState | str]:
             newf.pc += 1
             return [new]
         
-        case jvm.Binary(operant=jvm.BinaryOpr.Div):
+        case jvm.Binary(type=jvm.Int(), operant=op):
             new = state.copy()
-            newf = new.frames.peek()
-            v2 = newf.stack.pop()
-            v1 = newf.stack.pop()
-            logger.debug(f"frame.stack: {frame.stack}")
-            logger.debug(f"v2: {v2}")
-            logger.debug(f"v1: {v1}")
+            frame = new.frames.peek()
+            v2 = frame.stack.pop() 
+            v1 = frame.stack.pop() 
 
-            for v in v2.values:
-                if v == '0':
-                    return ["divide by zero"]
-            
-            newf.stack.push(Sign.binary_op(v1, v2, Sign.sign_div))
-            newf.pc += 1
-            return [new]
-        
-        case jvm.Binary(operant=jvm.BinaryOpr.Sub):
-            new = state.copy()
-            newf = new.frames.peek()
-            v2 = newf.stack.pop()
-            v1 = newf.stack.pop()
-            logger.debug(f"frame.stack: {frame.stack}")
-            logger.debug(f"v2: {v2}")
-            logger.debug(f"v1: {v1}")
-            
-            newf.stack.push(Sign.binary_op(v1, v2, Sign.sign_sub))
-            newf.pc += 1
+            match op:
+                case jvm.BinaryOpr.Add:
+                    res = Sign.binary_op(v1, v2, Sign.sign_add)
+                    frame.stack.push(res)
+                case jvm.BinaryOpr.Sub:
+                    res = Sign.binary_op(v1, v2, Sign.sign_sub)
+                    frame.stack.push(res)
+                case jvm.BinaryOpr.Mul:
+                    res = Sign.binary_op(v1, v2, Sign.sign_mul)
+                    frame.stack.push(res)
+                case jvm.BinaryOpr.Div:
+                    # Abstract division-by-zero detection
+                    if "0" in v2.values:
+                        return ["divide by zero"]
+                    res = Sign.binary_op(v1, v2, Sign.sign_div)
+                    frame.stack.push(res)
+                case _:
+                    raise NotImplementedError(str(op))
+
+            frame.pc += 1
             return [new]
         
         case jvm.Return(type=t): # return instruction for void
@@ -121,7 +119,7 @@ def step(state: AState) -> list[AState | str]:
             frame.pc += 1
             return [state] 
         case jvm.Boolean():
-            frame.stack.push("Z")
+            frame.stack.push(Sign('0', '+'))
             frame.pc += 1
             return [state]
         case jvm.Ifz(condition=c, target=t):
@@ -177,25 +175,26 @@ def step(state: AState) -> list[AState | str]:
         case jvm.New(classname=c):
             return ["assertion error"]
         
-        case jvm.If(condition=c, target=t): # if condition for integers
-            v2 = frame.stack.pop()   # TOP
-            v1 = frame.stack.pop()   # BELOW TOP
-            #assert v1.type == jvm.Int() and v2.type == jvm.Int()
+        case jvm.If(condition=c, target=t):
+            v2 = frame.stack.pop()
+            v1 = frame.stack.pop()
+
             jump_possible = False
             nojump_possible = False
+
             for val1 in v1.values:
                 for val2 in v2.values:
                     match c:
-                        case "ne": jump |= val1 != val2
-                        case "eq": jump |= val1 == val2
-                        case "gt": jump |= val1 > val2
-                        case "ge": jump |= val1 >= val2
-                        case "lt": jump |= val1 < val2
-                        case "le": jump |= val1 <= val2
-                        case _:    raise NotImplementedError(str(c))
-                    
-                    jump_possible |= jump
-                    nojump_possible |= not jump
+                        case "ne": cond = val1 != val2
+                        case "eq": cond = val1 == val2
+                        case "gt": cond = val1 > val2
+                        case "ge": cond = val1 >= val2
+                        case "lt": cond = val1 < val2
+                        case "le": cond = val1 <= val2
+                    if cond:
+                        jump_possible = True
+                    else:
+                        nojump_possible = True
             out = []
             if jump_possible:
                 sj = state.copy()
@@ -206,7 +205,7 @@ def step(state: AState) -> list[AState | str]:
                 sn = state.copy()
                 nf = sn.frames.peek()
                 nf.pc += 1
-                out.append(sj)
+                out.append(sn)
             return out
         
         case jvm.Goto(target=t):
@@ -214,18 +213,21 @@ def step(state: AState) -> list[AState | str]:
             return [state]
         
         case jvm.Store(type=t, index=i):
-            v = frame.stack.pop()
-            frame.locals[i] = v
-            frame.pc += 1
-            return [state]
+            new = state.copy()
+            nf = new.frames.peek()
+            v = nf.stack.pop()
+            nf.locals[i] = v
+            nf.pc += 1
+            return [new]
+
         
         case jvm.Dup(words=w):
-            v = frame.stack.peek()
-            vf = v.copy()
-            frame.stack.push(vf)
-            frame.stack(v)
-            frame.pc += 1
-            return [state]
+            new = state.copy()
+            newf = new.frames.peek()
+            v = newf.stack.peek()
+            newf.stack.push(v)
+            newf.pc += 1
+            return [new]
         
         case a:
             a.help()
