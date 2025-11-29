@@ -1,23 +1,17 @@
 from __future__ import annotations
 from typing import Dict, Any
 
-from z3 import (
-    Solver as Z3Solver,
-    IntVal, Int, BoolVal, Bool,
-    Not
-)
 
+from z3 import Solver as Z3Solver, Int, IntVal, BoolVal, Not, And, Or, sat
 from .path import PathConstraint
-from .symexpr import SymExpr, SymInt, SymBool, BinaryOp
+from .symexpr import SymExpr, SymInt, SymBool, BinaryOp, SymArrayElem
 
 
 class Solver:
     def __init__(self):
+        self._elem_cache: dict[int, Any] = {}
         pass
 
-    # ------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------
     def is_sat(self, path: PathConstraint) -> bool:
         z3 = Z3Solver()
         for c in path.constraints:
@@ -37,9 +31,6 @@ class Solver:
             out[str(name)] = model[val].as_long()
         return out
 
-    # ------------------------------------------------------------
-    # Expression translation
-    # ------------------------------------------------------------
     def _to_z3(self, expr: SymExpr):
         match expr:
             case SymInt():
@@ -50,6 +41,15 @@ class Solver:
                 return self._z3_binop(op, lhs, rhs)
             case ("not", inner):
                 return Not(self._to_z3(inner))
+
+        # --- ADD THIS BLOCK HERE ---
+        # Array element → fresh integer (uninterpreted)
+        if isinstance(expr, SymArrayElem):
+            key = id(expr)
+            if key not in self._elem_cache:
+                self._elem_cache[key] = Int(f"{expr.array}_elem_{key}")
+            return self._elem_cache[key]
+        # --- END OF ADDED BLOCK ---
 
         raise NotImplementedError(f"Unsupported expression: {expr!r}")
 

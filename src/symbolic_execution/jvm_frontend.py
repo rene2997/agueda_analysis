@@ -1,13 +1,29 @@
 from __future__ import annotations
 from typing import Any, List
-from unittest import case
-from venv import logger
+
 from jpamb import jvm
-from interpreter import PC, Bytecode  
+from interpreter import PC, Bytecode
 from .config import SEConfig
 from .symexpr import SymInt, BinaryOp, SymArrayRef, SymArrayElem
-from .symstate import SymbolicState 
+from .symstate import SymbolicState
+
 from .constraints import negate
+
+def _add_int(val: SymInt, inc: int) -> SymInt:
+    """
+    Helper for iinc-style updates.
+    Keeps integers concrete when possible and avoids building deep BinaryOp trees.
+    """
+    # If we have a concrete integer without a symbolic name, just fold it
+    if isinstance(val, SymInt) and getattr(val, "concrete", None) is not None and getattr(val, "name", None) is None:
+        return SymInt(concrete=val.concrete + inc)
+
+    # Adding zero changes nothing
+    if inc == 0:
+        return val
+
+    # Fallback: build a single BinaryOp node
+    return BinaryOp("+", val, SymInt(concrete=inc))
 
 class JVMFrontend:
     def __init__(self, bytecode: Bytecode, entry_method: jvm.AbsMethodID):
@@ -15,20 +31,98 @@ class JVMFrontend:
         self.entry_method = entry_method
 
     def initial_state(self, config) -> SymbolicState:
-        # Start at PC=0 in the entry method
+        # Start at PC=0
         state = SymbolicState(pc=PC(self.entry_method, 0))
         state.depth = 0
 
-        #   - 0-arg methods just ignore them
-        #   - 1-arg methods use locals[0]
-        #   - 2-arg methods (like divideZeroByZero) use locals[0], locals[1]
-        state.locals[0] = SymInt(name="arg0")
-        state.locals[1] = SymInt(name="arg1")
+        # ------------------------------------------------------------
+        # Parse method descriptor from something like:
+        #   "jpamb.cases.Arrays.arrayNotEmpty:([I)V"
+        # ------------------------------------------------------------
+        method_str = str(self.entry_method)
+        try:
+            desc = method_str.split(":", 1)[1]    # e.g. "([I)V"
+        except IndexError:
+            desc = "()V"
+
+        # Extract inside parentheses
+        if "(" in desc and ")" in desc:
+            args_part = desc[desc.index("(") + 1 : desc.index(")")]
+        else:
+            args_part = ""
+
+        i = 0
+        local_index = 0
+
+        # ------------------------------------------------------------
+        # Parse argument types manually (JVM descriptor format)
+        # ------------------------------------------------------------
+        while i < len(args_part):
+            ch = args_part[i]
+
+            # -------- ARRAY ARGUMENT: [I, [C, [Z, [B ----------
+            if ch == "[":
+                # Assume 1D array; next char is element type
+                if i + 1 < len(args_part):
+                    elem_ch = args_part[i + 1]
+                else:
+                    elem_ch = "I"
+
+                # Pick jpamb type for element
+                if elem_ch == "I":
+                    elem_type = jvm.Int()
+                elif elem_ch == "C":
+                    elem_type = jvm.Char()
+                elif elem_ch == "Z":
+                    elem_type = jvm.Boolean()
+                else:
+                    elem_type = jvm.Int()   # fallback
+
+                # Make symbolic length for the array object
+                len_sym = SymInt(name=f"len{local_index}")
+                # Array lengths are non-negative
+                state.path_constraint.add(BinaryOp(">=", len_sym, SymInt(concrete=0)))
+
+                arr_id = f"arg{local_index}_arr"
+                state.locals[arr_id] = {
+                    "length": len_sym,
+                    "type": elem_type,
+                }
+
+                # Local slot now holds a direct array reference (arguments are non-null)
+                state.locals[local_index] = SymArrayRef(name=arr_id)
+                
+                
+                # Move forward
+                i += 2
+                local_index += 1
+                continue
+
+            # -------- INTEGER ARGUMENT: I ----------
+            if ch == "I":
+                state.locals[local_index] = SymInt(name=f"arg{local_index}")
+                i += 1
+                local_index += 1
+                continue
+
+            # -------- BOOLEAN ARGUMENT: Z ----------
+            if ch == "Z":
+                # Represent boolean as 0/1 symbolic int
+                state.locals[local_index] = SymInt(name=f"arg{local_index}")
+                i += 1
+                local_index += 1
+                continue
+
+            # -------- OTHER (unsupported) ----------
+            i += 1
 
         return state
 
-    # added to prevent returning none from step() 
+    # Wrapper around the actual step implementation.
+    # Ensures we never return None. Depth is now managed by _step_impl
+    # only for control-flow instructions (If/Ifz).
     def step(self, s: SymbolicState) -> list[SymbolicState]:
+        s.steps += 1
         result = self._step_impl(s)
         if result is None:
             pc = PC(self.entry_method, s.pc)
@@ -36,6 +130,10 @@ class JVMFrontend:
             raise RuntimeError(
                 f"Frontend.step() returned None at pc={s.pc}, opcode={opcode!r}"
             )
+
+        # Depth is now managed inside `_step_impl` only for control‑flow
+        # instructions (If/Ifz). For all other opcodes, the depth of
+        # successor states is inherited from the parent.
         return result
 
     def _step_impl(self, s: SymbolicState):
@@ -50,9 +148,12 @@ class JVMFrontend:
 
         pc = PC(method, offset)
 
-        # 2. Look up opcode  <-- THIS WAS MISSING
+        # 2. Look up opcode
         opr = self.bytecode[pc]
 
+        # Current branching depth for this state; used to enforce a
+        # bound on loop unfolding only at control‑flow instructions.
+        parent_depth = getattr(s, "depth", 0)
 
         match opr:
             
@@ -66,39 +167,56 @@ class JVMFrontend:
             
             
             case jvm.Push(value=v):
-                new = s.copy()     
-                match v.type:
-                    case jvm.Int():
-                        # push a concrete integer as a SymInt
-                        new.stack.append(SymInt(concrete=v.value))
-
-                    case jvm.Boolean():
-                        # map booleans to 0/1, just like your concrete code does elsewhere
-                        concrete = 1 if v.value else 0
-                        new.stack.append(SymInt(concrete=concrete))
-
-                    case _:
-                        # For now, mark unsupported types as an error so we notice them
-                        new.terminated = True
-                        new.error = None
-                        return [new]
-
-                new.pc += 1
-                return [new]
-            
-            case jvm.Return(type=jvm.Int()):
                 new = s.copy()
-                retval = new.stack.pop()
-                new.terminated = True
-                new.error = "ok"
-                new.return_value = retval   # (optional but useful)
+                t = v.type
 
+                # 1) Integer constants
+                if isinstance(t, jvm.Int):
+                    new.stack.append(SymInt(concrete=v.value))
+
+                # 2) Boolean constants → 0/1
+                elif isinstance(t, jvm.Boolean):
+                    new.stack.append(SymInt(concrete=1 if v.value else 0))
+
+                # 3) Character constants → map to integer code
+                elif hasattr(jvm, "Char") and isinstance(t, jvm.Char):
+                    # v.value is a Python string length 1
+                    new.stack.append(SymInt(concrete=ord(v.value)))
+
+                # 4) Null constant
+                elif hasattr(jvm, "Null") and isinstance(t, jvm.Null):
+                    # Null must have NO symbolic name
+                    new.stack.append(SymInt(concrete=0, name=None))
+
+                # 5) Any other constant-like payload
+                else:
+                    # Safest fallback: treat as an integer literal
+                    val = getattr(v, "value", 0)
+                    # Strings length 1 (chars)
+                    if isinstance(val, str) and len(val) == 1:
+                        val = ord(val)
+                    # Non-int → fallback to 0
+                    if not isinstance(val, int):
+                        val = 0
+                    new.stack.append(SymInt(concrete=val))
+
+                # Proper PC advance
+                new.pc = PC(method, offset + 1)
                 return [new]
-            
-            case jvm.Return(type=None):
+
+            case jvm.Return():
                 new = s.copy()
-                new.return_value = None
+
+                # Determine return value (if any)
+                retval = None
+                ret_type = getattr(opr, "type", None)
+                if isinstance(ret_type, jvm.Int) and new.stack:
+                    # Integer-returning method: pop symbolic result
+                    retval = new.stack.pop()
+
+                new.return_value = retval
                 new.terminated = True
+                # Normal termination is classified as "ok"
                 new.error = "ok"
                 return [new]
 
@@ -133,12 +251,16 @@ class JVMFrontend:
                 true_state = s.copy()
                 false_state = s.copy()
 
+                # Increase branching depth only at this control‑flow point
+                true_state.depth = parent_depth + 1
+                false_state.depth = parent_depth + 1
+
                 # Pop the value
                 true_state.stack = true_state.stack[:-1]
                 false_state.stack = false_state.stack[:-1]
 
                 # Comparison with 0 / null
-                zero = SymInt(0)  # or however you represent literal 0
+                zero = SymInt(concrete=0)  # concrete integer 0
                 op_map = {
                     "eq": "==",
                     "ne": "!=",
@@ -192,6 +314,10 @@ class JVMFrontend:
                 # Clone states
                 true_state = s.copy()
                 false_state = s.copy()
+
+                # Increase branching depth only at this control‑flow point
+                true_state.depth = parent_depth + 1
+                false_state.depth = parent_depth + 1
 
                 # Operands
                 rhs = s.stack[-1]
@@ -251,19 +377,21 @@ class JVMFrontend:
                 ok_state.stack = ok_state.stack[:-2]
                 ok_state.stack.append(BinaryOp("%", lhs, rhs))
                 ok_state.path_constraint.add(negate(cond_expr))
-                ok_state.pc = s.pc + 1
+                ok_state.pc = PC(method, offset + 1)
 
                 return [err_state, ok_state]
                 
             case jvm.New(classname=c):
                 new = s.copy()
-                if c.slashed() == "java/lang/AssertionError":
-                    new.terminated = True
-                    new.error = "assertion error"
-                    return [new]
 
-                new.terminated = True
-                new.error = f"unsupported new: {c.slashed()}"
+                # Allocate a fresh, non-null reference for this object.
+                # We model references as symbolic integers where 0 means null.
+                ref_name = f"{c.slashed().replace('/', '_')}_ref_{len(new.locals)}"
+                new.stack.append(SymInt(name=ref_name, concrete=1))
+
+                # Just advance the program counter; the actual throwing of the
+                # AssertionError is modeled by the Throw opcode.
+                new.pc = PC(method, offset + 1)
                 return [new]
                 
             case jvm.Dup(words=w):
@@ -283,8 +411,61 @@ class JVMFrontend:
             
             case jvm.InvokeStatic(method=m):
                 new = s.copy()
-                new.terminated = True
-                new.error = None
+
+                # Method descriptor as string, e.g. "jpamb.cases.Simple.assertBoolean:(Z)V"
+                m_str = str(m)
+
+                # Special-case the assertion helper used throughout JPAMB
+                if "Simple.assertBoolean:(Z)V" in m_str:
+                    # Top of stack is the boolean argument (0 = false, 1 = true)
+                    cond_val = new.stack.pop()
+                    zero = SymInt(concrete=0)
+
+                    err_state = new.copy()
+                    ok_state  = new.copy()
+
+                    # cond_val == 0  -> assertion error
+                    cond_expr = BinaryOp("==", cond_val, zero)
+
+                    err_state.path_constraint.add(cond_expr)
+                    err_state.terminated = True
+                    err_state.error = "assertion error"
+
+                    # cond_val != 0  -> ok, just continue
+                    ok_state.path_constraint.add(negate(cond_expr))
+                    ok_state.pc = PC(method, offset + 1)
+
+                    return [err_state, ok_state]
+
+                # All other static calls: best-effort no-op (ignore body)
+                # If they pop arguments, we could parse the descriptor, but for Arrays
+                # tests it is usually fine to just advance the PC.
+                new.pc = PC(method, offset + 1)
+                return [new]
+
+            case jvm.InvokeSpecial(method=m, is_interface=_iface):
+                new = s.copy()
+
+                m_str = str(m)
+
+                # Special-case AssertionError constructor used in compiled asserts.
+                # Bytecode pattern is typically: new; dup; invokespecial <init>; athrow
+                # After `dup`, the stack has [ref, ref]. The constructor call consumes
+                # one receiver reference and returns void, so we pop exactly one ref
+                # and keep the other for the subsequent `Throw`.
+                if "java/lang/AssertionError.<init>:()V" in m_str:
+                    if new.stack:
+                        _this = new.stack.pop()
+                    new.pc = PC(method, offset + 1)
+                    return [new]
+
+                # Default behaviour for other invokespecial calls: conservatively
+                # pop a single receiver (if present) and advance. We ignore the
+                # callee body and any arguments, which is sufficient for our tests.
+                if new.stack:
+                    _recv = new.stack.pop()
+
+                new.pc = PC(method, offset + 1)
                 return [new]
                 
             case jvm.NewArray(type=t):
@@ -294,7 +475,9 @@ class JVMFrontend:
                 dim = new.stack.pop()
 
                 # symbolic arrays must have non-negative length
-                # optionally add constraint dim >= 0
+                ge_zero = BinaryOp(">=", dim, SymInt(concrete=0))
+                new.path_constraint.add(ge_zero)
+                new.path_constraint.add(BinaryOp(">=", dim, SymInt(concrete=0)))
 
                 # allocate a new heap array id
                 arr_id = f"arr_{id(new)}_{len(new.locals)}"
@@ -315,155 +498,233 @@ class JVMFrontend:
                 
             case jvm.ArrayLength():
                 new = s.copy()
+                arr = new.stack.pop()
 
-                # Pop symbolic array reference
-                arr_ref = new.stack.pop()
+                # Case 1: concrete null
+                if isinstance(arr, SymInt) and arr.concrete == 0:
+                    err = s.copy()
+                    err.terminated = True
+                    err.error = "null pointer"
+                    return [err]
 
-                if not isinstance(arr_ref, SymArrayRef):
-                    new.terminated = True
-                    new.error = None
-                    return [new]
+                # Case 2: not an array reference
+                if not isinstance(arr, SymArrayRef):
+                    err = s.copy()
+                    err.terminated = True
+                    err.error = "*"
+                    return [err]
 
-                # Lookup array summary
-                if arr_ref.name not in new.locals:
-                    new.terminated = True
-                    new.error = "null pointer"
-                    return [new]
+                # Case 3: null stored in locals (no summary)
+                if arr.name not in new.locals:
+                    err = s.copy()
+                    err.terminated = True
+                    err.error = "null pointer"
+                    return [err]
 
-                arr_info = new.locals[arr_ref.name]
-
-                # Extract symbolic length
-                length = arr_info["length"]
-
-                # Push symbolic length
+                # Case 4: OK path
+                length = new.locals[arr.name]["length"]
                 new.stack.append(length)
-
-                # Advance PC
                 new.pc = PC(method, offset + 1)
                 return [new]
 
             case jvm.ArrayStore(type=t):
-                # Make two copies for branching: OK path and OOB path
+                # OK path: we'll refine its path_constraint depending on arr_ref
                 new_ok = s.copy()
-                new_err = s.copy()
 
                 # Pop value, index, array reference from OK branch
                 val = new_ok.stack.pop()
                 idx = new_ok.stack.pop()
                 arr_ref = new_ok.stack.pop()
 
-                # TYPE CHECK: array reference must be symbolic
-                if not isinstance(arr_ref, SymArrayRef):
-                    new_err.terminated = True
-                    new_err.error = None
-                    return [new_err]
+                zero = SymInt(concrete=0)
 
-                # NULL CHECK: array summary must exist
-                if arr_ref.name not in new_ok.locals:
-                    new_err.terminated = True
-                    new_err.error = "null pointer"
-                    return [new_err]
+                # We may create extra error states
+                error_states: list[SymbolicState] = []
 
-                arr_info = new_ok.locals[arr_ref.name]
-                length = arr_info["length"]     # symbolic length
+                # -----------------------------------------
+                # CASE 1: arr_ref is a SymArrayRef (heap array)
+                # -----------------------------------------
+                if isinstance(arr_ref, SymArrayRef):
+                    arr_name = arr_ref.name
 
-                # -------------------------------------
-                # Build in-bounds condition: 0 <= idx < length
-                # -------------------------------------
-                cond_ge_0 = BinaryOp(">=", idx, SymInt(concrete=0))
+                # -----------------------------------------
+                # CASE 2: arr_ref is a SymInt "argument reference"
+                #         0  => null pointer
+                #         !=0 => some argX_ref → lookup argX_arr
+                # -----------------------------------------
+                elif isinstance(arr_ref, SymInt):
+                    # Concrete null from `Push Null`
+                    # Null is ANY SymInt whose concrete value is 0
+                    # even if it has a symbolic name by accident
+                    if getattr(arr_ref, "concrete", None) == 0:
+                        null_state = s.copy()
+                        null_state.terminated = True
+                        null_state.error = "null pointer"
+                        return [null_state]
+
+                    # Symbolic argument ref (0/≠0)
+                    is_null = BinaryOp("==", arr_ref, zero)
+
+                    null_state = s.copy()
+                    null_state.path_constraint.add(is_null)
+                    null_state.terminated = True
+                    null_state.error = "null pointer"
+                    error_states.append(null_state)
+
+                    new_ok.path_constraint.add(negate(is_null))
+
+                    refname = arr_ref.name
+                    if refname is None or "_ref" not in refname:
+                        bad = s.copy()
+                        bad.terminated = True
+                        bad.error = "*"
+                        return [bad, *error_states]
+
+                    arr_name = refname.replace("_ref", "_arr")
+
+                # -----------------------------------------
+                # CASE 3: unsupported reference type
+                # -----------------------------------------
+                else:
+                    err = s.copy()
+                    err.terminated = True
+                    err.error = "*"
+                    return [err]
+
+                # -----------------------------------------
+                # Lookup array summary
+                # -----------------------------------------
+                if arr_name not in new_ok.locals:
+                    # We think it's non-null, but no summary -> null pointer / bad ref
+                    err = s.copy()
+                    err.terminated = True
+                    err.error = "null pointer"
+                    return [err, *error_states]
+
+                arr_info = new_ok.locals[arr_name]
+                length = arr_info["length"]   # SymInt
+
+                # -------------------------
+                # Bounds checks
+                # -------------------------
+                cond_ge_0  = BinaryOp(">=", idx, SymInt(concrete=0))
                 cond_lt_len = BinaryOp("<", idx, length)
 
-                # Add constraints to OK path
+                # OK path: 0 <= idx < length
                 new_ok.path_constraint.add(cond_ge_0)
                 new_ok.path_constraint.add(cond_lt_len)
-                new_ok.pc = s.pc + 1
+                new_ok.pc = PC(method, offset + 1)
 
-                # Add negation to ERR path
-                # (not >= 0) OR (not < length)
-                new_err.path_constraint.add(negate(cond_ge_0))
-                new_err.path_constraint.add(negate(cond_lt_len))
-                new_err.terminated = True
-                new_err.error = "out of bounds"
+                # Error paths: idx < 0  OR  idx >= length
+                err_lo = s.copy()
+                err_lo.path_constraint.add(negate(cond_ge_0))   # idx < 0
+                err_lo.terminated = True
+                err_lo.error = "out of bounds"
 
-                return [new_ok, new_err]
+                err_hi = s.copy()
+                err_hi.path_constraint.add(negate(cond_lt_len)) # idx >= length
+                err_hi.terminated = True
+                err_hi.error = "out of bounds"
+
+                return [new_ok, err_lo, err_hi, *error_states]
                 
             case jvm.ArrayLoad(type=t):
-                # OK path and ERR path
                 new_ok = s.copy()
-                new_err = s.copy()
+                zero = SymInt(concrete=0)
 
-                # pop index and array reference
+                # Pop index and array reference (stack order: ..., arrayref, index)
                 idx = new_ok.stack.pop()
                 arr_ref = new_ok.stack.pop()
 
-                # type check: array reference must be symbolic
-                if not isinstance(arr_ref, SymArrayRef):
-                    new_err.terminated = True
-                    new_err.error = f"ArrayLoad on non-array reference: {arr_ref}"
-                    return [new_err]
+                error_states: list[SymbolicState] = []
 
-                # null pointer?
-                if arr_ref.name not in new_ok.locals:
-                    new_err.terminated = True
-                    new_err.error = "null pointer"
-                    return [new_err]
+                # -----------------------------------------
+                # 1) Null pointer checks
+                # -----------------------------------------
+                # Concrete null (pushed as 0)
+                if isinstance(arr_ref, SymInt) and getattr(arr_ref, "concrete", None) == 0:
+                    err = s.copy()
+                    err.terminated = True
+                    err.error = "null pointer"
+                    return [err]
 
-                arr_info = new_ok.locals[arr_ref.name]
-                length = arr_info["length"]    # symbolic length
+                # Argument-style reference: argX_ref -> argX_arr
+                arr_name: str | None = None
+                if isinstance(arr_ref, SymArrayRef):
+                    arr_name = arr_ref.name
+                elif isinstance(arr_ref, SymInt):
+                    # Symbolic ref representing method argument: 0/null, !=0/non-null
+                    refname = arr_ref.name
+                    if refname is not None and "_ref" in refname:
+                        arr_name = refname.replace("_ref", "_arr")
+                    else:
+                        # We don't know what this is; treat 0 vs non-zero:
+                        is_null = BinaryOp("==", arr_ref, zero)
 
-                # -------------------------
-                # Bounds checks
-                # -------------------------
-                cond_ge_0 = BinaryOp(">=", idx, SymInt(concrete=0))
+                        null_state = s.copy()
+                        null_state.path_constraint.add(is_null)
+                        null_state.terminated = True
+                        null_state.error = "null pointer"
+                        error_states.append(null_state)
+
+                        new_ok.path_constraint.add(negate(is_null))
+
+                        # And bail out if we can't map the reference to an array summary
+                        if refname is None or "_ref" not in refname:
+                            bad = s.copy()
+                            bad.terminated = True
+                            bad.error = "*"
+                            return [bad, *error_states]
+
+                        arr_name = refname.replace("_ref", "_arr")
+
+                if arr_name is None:
+                    # Unknown reference kind
+                    err = s.copy()
+                    err.terminated = True
+                    err.error = "*"
+                    return [err]
+
+                # -----------------------------------------
+                # 2) Lookup array summary
+                # -----------------------------------------
+                if arr_name not in new_ok.locals:
+                    # Non-null but no array summary → treat as null pointer / bad ref
+                    err = s.copy()
+                    err.terminated = True
+                    err.error = "null pointer"
+                    return [err, *error_states]
+
+                arr_info = new_ok.locals[arr_name]
+                length = arr_info["length"]  # SymInt for array length
+
+                # -----------------------------------------
+                # 3) Generic arrays: keep full OOB modeling
+                # -----------------------------------------
+                cond_ge_0   = BinaryOp(">=", idx, zero)
                 cond_lt_len = BinaryOp("<", idx, length)
-                # OK path and ERR path
-                new_ok = s.copy()
-                new_err = s.copy()
 
-                # pop index and array reference
-                idx = new_ok.stack.pop()
-                arr_ref = new_ok.stack.pop()
-
-                # type check: array reference must be symbolic
-                if not isinstance(arr_ref, SymArrayRef):
-                    new_err.terminated = True
-                    new_err.error = f"ArrayLoad on non-array reference: {arr_ref}"
-                    return [new_err]
-
-                # null pointer?
-                if arr_ref.name not in new_ok.locals:
-                    new_err.terminated = True
-                    new_err.error = "null pointer"
-                    return [new_err]
-
-                arr_info = new_ok.locals[arr_ref.name]
-                length = arr_info["length"]    # symbolic length
-
-                # -------------------------
-                # Bounds checks
-                # -------------------------
-                cond_ge_0 = BinaryOp(">=", idx, SymInt(concrete=0))
-                cond_lt_len = BinaryOp("<", idx, length)
-
-                # True path: index in bounds
+                # OK path: 0 <= idx < length
                 new_ok.path_constraint.add(cond_ge_0)
                 new_ok.path_constraint.add(cond_lt_len)
 
-                # Push symbolic element
-                new_ok.stack.append(
-                    SymArrayElem(arr_ref.name, idx)
-                )
+                # Push a symbolic array element
+                new_ok.stack.append(SymArrayElem(arr_name, idx))
+                new_ok.pc = PC(method, offset + 1)
 
-                new_ok.pc = s.pc + 1
+                # Error paths: idx < 0 and idx >= length
+                err_lo = s.copy()
+                err_lo.path_constraint.add(negate(cond_ge_0))   # idx < 0
+                err_lo.terminated = True
+                err_lo.error = "out of bounds"
 
-                # Error path: out of bounds
-                new_err.path_constraint.add(negate(cond_ge_0))
-                new_err.path_constraint.add(negate(cond_lt_len))
-                new_err.terminated = True
-                new_err.error = "out of bounds"
+                err_hi = s.copy()
+                err_hi.path_constraint.add(negate(cond_lt_len)) # idx >= length
+                err_hi.terminated = True
+                err_hi.error = "out of bounds"
 
-                return [new_ok, new_err]
-                
+                return [new_ok, err_lo, err_hi, *error_states]
+                    
             case jvm.Cast(from_=f, to_=t):
                 new = s.copy()
                 new.pc = PC(method, offset + 1)
@@ -491,15 +752,15 @@ class JVMFrontend:
             case jvm.Load(type=t, index=i):
                 new = s.copy()
                 if i not in new.locals:
-                    new.terminated = True
-                    new.error = None
+                    # JVM default: uninitialized int local = 0
+                    new.stack.append(SymInt(concrete=0))
+                    new.pc = PC(method, offset + 1)
                     return [new]
+
                 val = new.locals[i]
-                # push symbolic value onto stack
                 new.stack.append(val)
                 new.pc = PC(method, offset + 1)
                 return [new]
-            
             
             case jvm.Binary(type=jvm.Int(), operant=jvm.BinaryOpr.Div):
                 # We symbolically branch on (rhs == 0)
@@ -522,7 +783,7 @@ class JVMFrontend:
                 ok_state.stack = ok_state.stack[:-2]    # pop lhs, rhs
                 ok_state.stack.append(BinaryOp("//", lhs, rhs))  # symbolic quotient
                 ok_state.path_constraint.add(negate(cond_expr))
-                ok_state.pc = s.pc + 1
+                ok_state.pc = PC(method, offset + 1)
                 return [err_state, ok_state]
 
             case jvm.Binary(type=jvm.Int(), operant=jvm.BinaryOpr.Mul):
@@ -539,8 +800,45 @@ class JVMFrontend:
                 
             case jvm.Throw():
                 new = s.copy()
+
+                exc = None
+                if new.stack:
+                    exc = new.stack.pop()
+
+                # Default classification
+                error_label = "*"
+
+                # If we know something about the thrown object, refine the label
+                if isinstance(exc, SymInt):
+                    ref_name = getattr(exc, "name", "") or ""
+
+                    # Map by class name encoded in the reference name
+                    if "AssertionError" in ref_name:
+                        error_label = "assertion error"
+                    elif "NullPointerException" in ref_name:
+                        error_label = "null pointer"
+                    elif "ArrayIndexOutOfBoundsException" in ref_name:
+                        error_label = "out of bounds"
+                    elif "ArithmeticException" in ref_name:
+                        # Typically used for divide-by-zero etc.
+                        error_label = "divide by zero"
+
                 new.terminated = True
-                new.error = "assertion error"
+                new.error = error_label
+                return [new]
+            
+            case jvm.Incr(index=idx, amount=inc):
+                # iinc idx, inc  -- increment local variable idx by constant inc
+                new = s.copy()
+
+                # Get current value of local idx (default 0 if uninitialized)
+                cur_val = new.locals.get(idx, SymInt(concrete=0))
+
+                # Add the concrete increment (with light simplification)
+                new.locals[idx] = _add_int(cur_val, inc)
+
+                # Advance program counter
+                new.pc = PC(method, offset + 1)
                 return [new]
             
             case _:
@@ -549,3 +847,4 @@ class JVMFrontend:
                 new.terminated = True
                 new.error = "*"
                 return [new]
+

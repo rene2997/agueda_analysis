@@ -28,17 +28,18 @@ class SymbolicState:
     terminated: bool = False
     error: Optional[str] = None
     return_value: Optional[Any] = None
+    steps: int = 0
+
     
     def copy(self) -> "SymbolicState":
-        """
-        Shallow copy of the state; symbolic expressions are immutable.
-        """
         return SymbolicState(
             pc=self.pc,
             stack=list(self.stack),
             locals=dict(self.locals),
             path_constraint=self.path_constraint.copy(),
+            depth=self.depth,              
             terminated=self.terminated,
             error=self.error,
-            return_value=self.return_value, 
+            return_value=self.return_value,
+            steps=self.steps,              
         )
