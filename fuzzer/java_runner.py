@@ -5,67 +5,25 @@ import os
 from typing import Tuple, Optional, Dict
 
 class JavaRunner:
-    def __init__(self, java_class_path: str, target_class: str, config, coverage_output_path: str = "coverage_temp.json"):
+    def __init__(self, java_class_path: str, target_method: str, config, coverage_output_path: str = "coverage_temp.json"):
         """
-        :param java_class_path: Java class path (e.g., "bin:lib/asm.jar", including instrumented class files)
-        :param target_class: Target class name (e.g., "com.test.DivisionLoop")
+        :param java_class_path: Java classpath (e.g., "bin:lib/asm.jar", including instrumented class files)
+        :param target_method: Target Java method for testing (with package name, class name, and input/output parameter types)
         :param coverage_output_path: File path for the instrumented Java program to output coverage data (as previously agreed)
         """
         self.java_class_path = java_class_path
-        self.target_class = target_class
+        self.target_method = target_method
         self.config = config # Pass in the FuzzerConfig object
+        self.runtime_class = "jpamb.Runtime"    # Fixed runtime class for executing the target method
+
         self.coverage_output_path = coverage_output_path
         # Ensure that there are no residual coverage output files
         if os.path.exists(coverage_output_path):
             os.remove(coverage_output_path)
 
-    def run_java_program(self, input_data: int) -> Tuple[Optional[Dict], Optional[str]]:
+    def run_java_program(self, input_data: str):
         """
-        Run the instrumented Java program and return coverage data and exception information.
-        :param input_data: Test case input (adapted to the int parameter of the Java program)
-        :return: (coverage_data: dictionary of coverage branch lists, error_msg: exception information (None if none))
-        """
-        # 1. Construct the Java execution command (e.g., java -cp bin:lib/asm.jar com.test.DivisionLoop 1024)
-        cmd = [
-            "java",
-            "-cp", self.java_class_path,
-            self.target_class,
-            str(input_data)  # Pass input parameters (Java program needs to read command line arguments)
-        ]
-
-        try:
-            # 2. Execute the Java program and capture stdout (normal output) and stderr (exception output)
-            result = subprocess.run(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                timeout=5  # Timeout control (to avoid infinite loops)
-            )
-
-            # 3. Read exception information (exceptions thrown by the Java program will be printed to stderr)
-            error_msg = None
-            if result.returncode != 0:  # A non-zero return code indicates an execution exception
-                error_msg = f"Java execution exception (return code {result.returncode}): {result.stderr.strip()}"
-
-            # 4. Read coverage data (file written after the instrumented program is executed)
-            coverage_data = None
-            if os.path.exists(self.coverage_output_path):
-                with open(self.coverage_output_path, "r", encoding="utf-8") as f:
-                    coverage_data = json.load(f)  # Expected format: {"covered_branches": ["class:method:line:branchID", ...]}
-                # Delete the temporary file after reading to avoid residuals
-                os.remove(self.coverage_output_path)
-
-            return coverage_data, error_msg
-
-        except subprocess.TimeoutExpired:
-            return None, f"Java program execution timed out (exceeded 5 seconds)"
-        except Exception as e:
-            return None, f"Python failed to call Java: {str(e)}"
-
-    def run_java_program2(self, input_data: str):
-        """
-        Execute the Java program using the instrumentation agent and return the execution result.
+        Executes the Java program using the instrumentation agent and returns the execution result.
         """
         # 1. Define the paths for the instrumentation agent and output files (read from the configuration)
         agent_path = self.config.agent_path
@@ -73,10 +31,10 @@ class JavaRunner:
         map_path = self.config.map_output_path
         edge_path = self.config.edge_coverage_path
 
-        # 2. Build the -javaagent parameter string
+        # 2. Build the -javaagent argument string
         agent_args = (
             f"-javaagent:{agent_path}="
-            f"size=65536,"
+            f"size={self.config.coverage_map_size},"
             f"shm={os.path.abspath(shm_path)},"
             f"map={os.path.abspath(map_path)},"
             f"map.append=false,"
@@ -84,17 +42,32 @@ class JavaRunner:
             f"perEdgePath={os.path.abspath(edge_path)}"
         )
 
-        # 3. Build the complete Java execution command list
+        # 3. Format the input data
+        # --- Core modification: Format the tuple into a Java parameter string ---
+        if isinstance(input_data, tuple):
+            # For a tuple (1, 2, 3), create the string "(1,2,3)"
+            param_str = ",".join(map(str, input_data))
+            formatted_input = f"({param_str})"
+        else:
+            # Compatible with single value cases, e.g., 42 -> "(42)"
+            formatted_input = f"({input_data})"
+
+        # 4. Build the complete Java execution command list
         command = [
             "java",
             agent_args,
+            "-ea", # Enable assertions
             "-cp",
             self.java_class_path,
-            self.target_class,
-            str(input_data)  # Ensure the input is a string
+            self.runtime_class,
+            self.target_method, # First argument: method signature
+            formatted_input     # Second argument: formatted parameters required by the target method to be executed
         ]
 
-        # 4. Execute the command
+        # 4.1 log
+        print(f"========executed java command is: {command}========")
+
+        # 5. Execute the command
         try:
             # Before each execution, clear the old edge coverage file to ensure that only the current execution is counted
             if os.path.exists(edge_path):
@@ -106,7 +79,7 @@ class JavaRunner:
                 text=True,
                 timeout=5  # Set a timeout to prevent the program from getting stuck
             )
-            # Return standard error because Java's exception stack is usually output to stderr
+            # Return stderr because Java's exception stack traces are usually output to stderr
             return result.stderr
         except subprocess.TimeoutExpired:
             return "Error: Java process timed out."
