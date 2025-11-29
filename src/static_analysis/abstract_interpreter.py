@@ -6,7 +6,7 @@ import sys
 from loguru import logger
 from abstractions import Sign, AState, PerVarFrame, PC, OperandStack, Stack
 
-MAX_ITERATIONS = 1000
+MAX_ITERATIONS = 1000000
 
 @dataclass
 class Bytecode:
@@ -233,79 +233,80 @@ def step(state: AState) -> list[AState | str]:
             a.help()
             raise NotImplementedError(f"Don't know how to handle: {a!r}")
         
+def create_initial_abstract_state(methodid, input) -> AState:
+    frame = PerVarFrame.from_method(methodid)
+    for i, v in enumerate(input.values):
+        match v:
+            case jvm.Value(type=jvm.Reference(value = value)):
+                v = (Sign.abstract(value))
+
+            case jvm.Value(type=jvm.Float(value = value)):
+                v = (Sign.abstract(value))
+
+            case jvm.Value(type=jvm.Boolean(), value = value):
+                BoolToInt= 1 if value else 0
+                v = (Sign.abstract({BoolToInt}))
+
+            case jvm.Value(type=jvm.Int(), value= value):
+                v = (Sign.abstract(value))
+
+            case jvm.Value(type=jvm.Value(), value= value):
+                v = (Sign.abstract(value.value))
+
+            case jvm.Value(type=jvm.Array(), value = value):
+                ArrayToReference = jvm.Value(jvm.Reference(), value) #our system only deals with int float and reference
+                v = (Sign.abstract({ArrayToReference}))
+            #case jvm.Value(type=jvm.Char()):
+            case _:
+                assert False, f"Do not know how to handle {v}"
+        frame.locals[i] = v
+
+    state = AState({}, Stack.empty().push(frame))
+    return state
+
+def run_abstract_interpreter(AState:AState, max_iterations:int) -> list[AState | str]:
+    start_pc = AState.frames.peek().pc.offset
+    analysis_map = {start_pc: AState}
+    worklist = [start_pc] #the worklist is a todo list. when we find a new branch or update the interpreter, we add the pc of it's successor to the list
+    final = [] #holds final states
+    instruction_count = 0
+    while worklist:
+        logger.debug(f"WORKLIST: {worklist}")
+
+        if instruction_count >= max_iterations:
+            logger.warning(f"Analysis terminated: Fixed bound of {max_iterations} transitions reached.")
+            break
+
+        current_pc = worklist.pop(0)
+        current_state = analysis_map[current_pc]
+
+        successors = step(current_state)
+        instruction_count += 1
+
+        for succ in successors:
+            if isinstance(succ, str):
+                final.append(succ)
+                continue
+
+            succ_pc = succ.frames.peek().pc.offset
+            old_state = analysis_map.get(succ_pc)
+
+            if old_state is None:
+                analysis_map[succ_pc] = succ
+                worklist.append(succ_pc)
+            else:
+                new_joined_state = old_state.join(succ)
+                if not new_joined_state.is_le(old_state):
+                    analysis_map[succ_pc] = new_joined_state
+                    worklist.append(succ_pc)
+    return final
+
 logger.remove()
 logger.add(sys.stderr, format="[{level}] {message}")
 
 methodid, input = jpamb.getcase()
-frame = PerVarFrame.from_method(methodid)
-print(type(input), getattr(input, "__dict__", None))
-print(type(input.values), input.values)
-for i, v in enumerate(input.values):
-    print(i, v, v.type, getattr(v, "value", None))
-    match v:
-        case jvm.Value(type=jvm.Reference(value = value)):
-            v = (Sign.abstract(value))
-
-        case jvm.Value(type=jvm.Float(value = value)):
-            v = (Sign.abstract(value))
-
-        case jvm.Value(type=jvm.Boolean(), value = value):
-            BoolToInt= 1 if value else 0
-            v = (Sign.abstract({BoolToInt}))
-
-        case jvm.Value(type=jvm.Int(), value= value):
-            v = (Sign.abstract(value))
-
-        case jvm.Value(type=jvm.Value(), value= value):
-            v = (Sign.abstract(value.value))
-
-        case jvm.Value(type=jvm.Array(), value = value):
-            ArrayToReference = jvm.Value(jvm.Reference(), value) #our system only deals with int float and reference
-            v = (Sign.abstract({ArrayToReference}))
-        #case jvm.Value(type=jvm.Char()):
-        case _:
-            assert False, f"Do not know how to handle {v}"
-    logger.debug(f"v has the value: {v}")
-    frame.locals[i] = v
-
-state = AState({}, Stack.empty().push(frame))
-
-start_pc = state.frames.peek().pc.offset
-analysis_map = {start_pc: state}
-worklist = [start_pc] #the worklist is a todo list. when we find a new branch or update the interpreter, we add the pc of it's successor to the list
-final = [] #holds final states
-instruction_count = 0
-while worklist:
-    logger.debug(f"WORKLIST: {worklist}")
-
-    if instruction_count >= MAX_ITERATIONS:
-        logger.warning(f"Analysis terminated: Fixed bound of {MAX_ITERATIONS} transitions reached.")
-        break
-
-    current_pc = worklist.pop(0)
-    current_state = analysis_map[current_pc]
-
-    successors = step(current_state)
-    instruction_count += 1
-
-    for succ in successors:
-        if isinstance(succ, str):
-            final.append(succ)
-            continue
-
-        succ_pc = succ.frames.peek().pc.offset
-        old_state = analysis_map.get(succ_pc)
-
-        if old_state is None:
-            analysis_map[succ_pc] = succ
-            worklist.append(succ_pc)
-        else:
-            new_joined_state = old_state.join(succ)
-            if not new_joined_state.is_le(old_state):
-                analysis_map[succ_pc] = new_joined_state
-                worklist.append(succ_pc)
-
-logger.debug(f"Total instructions executed: {instruction_count}")
+state = create_initial_abstract_state(methodid, input)
+final = run_abstract_interpreter(state, MAX_ITERATIONS)
 
 if 'divide by zero' in final:
     print("divide by zero")
@@ -317,6 +318,9 @@ elif final:
     print(f"Analysis finished, encountered terminal states: {set(final)}")
 else:
     print("*") #Analysis terminated by reaching the fixed bound before finding a conclusive state.
+
+
+
 
 def number_of_args():
     return
