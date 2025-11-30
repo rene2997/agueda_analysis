@@ -1,16 +1,20 @@
 from unittest import case
 import jpamb
 from jpamb import jvm
+from jpamb.model import Suite
 from dataclasses import dataclass
 import sys
 from loguru import logger
-from abstractions import Sign, AState, PerVarFrame, PC, OperandStack, Stack
+try:
+    from .abstractions import Sign, AState, PerVarFrame, PC, OperandStack, Stack
+except ImportError:
+    from abstractions import Sign, AState, PerVarFrame, PC, OperandStack, Stack
 
-MAX_ITERATIONS = 1000
+MAX_ITERATIONS = 1000000
 
 @dataclass
 class Bytecode:
-    suite: jpamb.Suite
+    suite: Suite
     methods: dict[jvm.AbsMethodID, list[jvm.Opcode]]
 
     def __getitem__(self, pc: PC) -> jvm.Opcode:
@@ -22,7 +26,7 @@ class Bytecode:
 
         return opcodes[pc.offset]
 
-suite = jpamb.Suite()
+suite = Suite()
 bc = Bytecode(suite, dict())
 
 def step(state: AState) -> list[AState | str]:
@@ -30,11 +34,11 @@ def step(state: AState) -> list[AState | str]:
     frame = state.frames.peek()
     opr = bc[frame.pc]
     print(f"@@COV {frame.pc.method} {frame.pc.offset}")
-    logger.debug(f"STEP {opr}\n{state}")
+    #logger.debug(f"STEP {opr}\n{state}")
 
     match opr:
         case jvm.Push(value=v):
-            logger.debug(f"v in PUSH is: {v}")
+            #logger.debug(f"v in PUSH is: {v}")
             av = Sign.abstract(v.value)
             new = state.copy()
             newf = new.frames.peek()
@@ -44,41 +48,39 @@ def step(state: AState) -> list[AState | str]:
         
         case jvm.Load(type=t, index=i):
             v = frame.locals[i]
-            logger.debug(f"v in LOAD is: {v}")
+            #logger.debug(f"v in LOAD is: {v}")
             new = state.copy()
             newf = new.frames.peek()
             newf.stack.push(v)
             newf.pc += 1
             return [new]
         
-        case jvm.Binary(operant=jvm.BinaryOpr.Div):
+        case jvm.Binary(type=jvm.Int(), operant=op):
             new = state.copy()
-            newf = new.frames.peek()
-            v2 = newf.stack.pop()
-            v1 = newf.stack.pop()
-            logger.debug(f"frame.stack: {frame.stack}")
-            logger.debug(f"v2: {v2}")
-            logger.debug(f"v1: {v1}")
+            frame = new.frames.peek()
+            v2 = frame.stack.pop() 
+            v1 = frame.stack.pop() 
 
-            for v in v2.values:
-                if v == '0':
-                    return ["divide by zero"]
-            
-            newf.stack.push(Sign.binary_op(v1, v2, Sign.sign_div))
-            newf.pc += 1
-            return [new]
-        
-        case jvm.Binary(operant=jvm.BinaryOpr.Sub):
-            new = state.copy()
-            newf = new.frames.peek()
-            v2 = newf.stack.pop()
-            v1 = newf.stack.pop()
-            logger.debug(f"frame.stack: {frame.stack}")
-            logger.debug(f"v2: {v2}")
-            logger.debug(f"v1: {v1}")
-            
-            newf.stack.push(Sign.binary_op(v1, v2, Sign.sign_sub))
-            newf.pc += 1
+            match op:
+                case jvm.BinaryOpr.Add:
+                    res = Sign.binary_op(v1, v2, Sign.sign_add)
+                    frame.stack.push(res)
+                case jvm.BinaryOpr.Sub:
+                    res = Sign.binary_op(v1, v2, Sign.sign_sub)
+                    frame.stack.push(res)
+                case jvm.BinaryOpr.Mul:
+                    res = Sign.binary_op(v1, v2, Sign.sign_mul)
+                    frame.stack.push(res)
+                case jvm.BinaryOpr.Div:
+                    # Abstract division-by-zero detection
+                    if "0" in v2.values:
+                        return ["divide by zero"]
+                    res = Sign.binary_op(v1, v2, Sign.sign_div)
+                    frame.stack.push(res)
+                case _:
+                    raise NotImplementedError(str(op))
+
+            frame.pc += 1
             return [new]
         
         case jvm.Return(type=t): # return instruction for void
@@ -121,13 +123,13 @@ def step(state: AState) -> list[AState | str]:
             frame.pc += 1
             return [state] 
         case jvm.Boolean():
-            frame.stack.push("Z")
+            frame.stack.push(Sign('0', '+'))
             frame.pc += 1
             return [state]
         case jvm.Ifz(condition=c, target=t):
             v = frame.stack.pop()
             vals = v.values
-            print(f"vals in Ifz: {vals}")
+            #print(f"vals in Ifz: {vals}")
             #assert v.type == jvm.Int()
             jump_possible = False
             nojump_possible = False
@@ -177,25 +179,26 @@ def step(state: AState) -> list[AState | str]:
         case jvm.New(classname=c):
             return ["assertion error"]
         
-        case jvm.If(condition=c, target=t): # if condition for integers
-            v2 = frame.stack.pop()   # TOP
-            v1 = frame.stack.pop()   # BELOW TOP
-            #assert v1.type == jvm.Int() and v2.type == jvm.Int()
+        case jvm.If(condition=c, target=t):
+            v2 = frame.stack.pop()
+            v1 = frame.stack.pop()
+
             jump_possible = False
             nojump_possible = False
+
             for val1 in v1.values:
                 for val2 in v2.values:
                     match c:
-                        case "ne": jump |= val1 != val2
-                        case "eq": jump |= val1 == val2
-                        case "gt": jump |= val1 > val2
-                        case "ge": jump |= val1 >= val2
-                        case "lt": jump |= val1 < val2
-                        case "le": jump |= val1 <= val2
-                        case _:    raise NotImplementedError(str(c))
-                    
-                    jump_possible |= jump
-                    nojump_possible |= not jump
+                        case "ne": cond = val1 != val2
+                        case "eq": cond = val1 == val2
+                        case "gt": cond = val1 > val2
+                        case "ge": cond = val1 >= val2
+                        case "lt": cond = val1 < val2
+                        case "le": cond = val1 <= val2
+                    if cond:
+                        jump_possible = True
+                    else:
+                        nojump_possible = True
             out = []
             if jump_possible:
                 sj = state.copy()
@@ -206,7 +209,7 @@ def step(state: AState) -> list[AState | str]:
                 sn = state.copy()
                 nf = sn.frames.peek()
                 nf.pc += 1
-                out.append(sj)
+                out.append(sn)
             return out
         
         case jvm.Goto(target=t):
@@ -214,107 +217,117 @@ def step(state: AState) -> list[AState | str]:
             return [state]
         
         case jvm.Store(type=t, index=i):
-            v = frame.stack.pop()
-            frame.locals[i] = v
-            frame.pc += 1
-            return [state]
+            new = state.copy()
+            nf = new.frames.peek()
+            v = nf.stack.pop()
+            nf.locals[i] = v
+            nf.pc += 1
+            return [new]
+
         
         case jvm.Dup(words=w):
-            v = frame.stack.peek()
-            vf = v.copy()
-            frame.stack.push(vf)
-            frame.stack(v)
-            frame.pc += 1
-            return [state]
+            new = state.copy()
+            newf = new.frames.peek()
+            v = newf.stack.peek()
+            newf.stack.push(v)
+            newf.pc += 1
+            return [new]
         
         case a:
             a.help()
             raise NotImplementedError(f"Don't know how to handle: {a!r}")
         
-logger.remove()
-logger.add(sys.stderr, format="[{level}] {message}")
+def create_initial_abstract_state(methodid, input) -> AState:
+    frame = PerVarFrame.from_method(methodid)
+    for i, v in enumerate(input.values):
+        match v:
+            case jvm.Value(type=jvm.Reference(value = value)):
+                v = (Sign.abstract(value))
 
-methodid, input = jpamb.getcase()
-frame = PerVarFrame.from_method(methodid)
-print(type(input), getattr(input, "__dict__", None))
-print(type(input.values), input.values)
-for i, v in enumerate(input.values):
-    print(i, v, v.type, getattr(v, "value", None))
-    match v:
-        case jvm.Value(type=jvm.Reference(value = value)):
-            v = (Sign.abstract(value))
+            case jvm.Value(type=jvm.Float(value = value)):
+                v = (Sign.abstract(value))
 
-        case jvm.Value(type=jvm.Float(value = value)):
-            v = (Sign.abstract(value))
+            case jvm.Value(type=jvm.Boolean(), value = value):
+                BoolToInt= 1 if value else 0
+                v = (Sign.abstract({BoolToInt}))
 
-        case jvm.Value(type=jvm.Boolean(), value = value):
-            BoolToInt= 1 if value else 0
-            v = (Sign.abstract({BoolToInt}))
+            case jvm.Value(type=jvm.Int(), value= value):
+                v = (Sign.abstract(value))
 
-        case jvm.Value(type=jvm.Int(), value= value):
-            v = (Sign.abstract(value))
+            case jvm.Value(type=jvm.Value(), value= value):
+                v = (Sign.abstract(value.value))
 
-        case jvm.Value(type=jvm.Value(), value= value):
-            v = (Sign.abstract(value.value))
+            case jvm.Value(type=jvm.Array(), value = value):
+                ArrayToReference = jvm.Value(jvm.Reference(), value) #our system only deals with int float and reference
+                v = (Sign.abstract({ArrayToReference}))
+            #case jvm.Value(type=jvm.Char()):
+            case _:
+                assert False, f"Do not know how to handle {v}"
+        frame.locals[i] = v
 
-        case jvm.Value(type=jvm.Array(), value = value):
-            ArrayToReference = jvm.Value(jvm.Reference(), value) #our system only deals with int float and reference
-            v = (Sign.abstract({ArrayToReference}))
-        #case jvm.Value(type=jvm.Char()):
-        case _:
-            assert False, f"Do not know how to handle {v}"
-    logger.debug(f"v has the value: {v}")
-    frame.locals[i] = v
+    state = AState({}, Stack.empty().push(frame))
+    return state
 
-state = AState({}, Stack.empty().push(frame))
+def run_abstract_interpreter(AState:AState, max_iterations:int) -> list[AState | str]:
+    start_pc = AState.frames.peek().pc.offset
+    analysis_map = {start_pc: AState}
+    worklist = [start_pc] #the worklist is a todo list. when we find a new branch or update the interpreter, we add the pc of it's successor to the list
+    final = [] #holds final states
+    instruction_count = 0
+    while worklist:
+        #logger.debug(f"WORKLIST: {worklist}")
 
-start_pc = state.frames.peek().pc.offset
-analysis_map = {start_pc: state}
-worklist = [start_pc] #the worklist is a todo list. when we find a new branch or update the interpreter, we add the pc of it's successor to the list
-final = [] #holds final states
-instruction_count = 0
-while worklist:
-    logger.debug(f"WORKLIST: {worklist}")
+        if instruction_count >= max_iterations:
+            logger.warning(f"Analysis terminated: Fixed bound of {max_iterations} transitions reached.")
+            break
 
-    if instruction_count >= MAX_ITERATIONS:
-        logger.warning(f"Analysis terminated: Fixed bound of {MAX_ITERATIONS} transitions reached.")
-        break
+        current_pc = worklist.pop(0)
+        current_state = analysis_map[current_pc]
 
-    current_pc = worklist.pop(0)
-    current_state = analysis_map[current_pc]
+        successors = step(current_state)
+        instruction_count += 1
 
-    successors = step(current_state)
-    instruction_count += 1
+        for succ in successors:
+            if isinstance(succ, str):
+                final.append(succ)
+                continue
 
-    for succ in successors:
-        if isinstance(succ, str):
-            final.append(succ)
-            continue
+            succ_pc = succ.frames.peek().pc.offset
+            old_state = analysis_map.get(succ_pc)
 
-        succ_pc = succ.frames.peek().pc.offset
-        old_state = analysis_map.get(succ_pc)
-
-        if old_state is None:
-            analysis_map[succ_pc] = succ
-            worklist.append(succ_pc)
-        else:
-            new_joined_state = old_state.join(succ)
-            if not new_joined_state.is_le(old_state):
-                analysis_map[succ_pc] = new_joined_state
+            if old_state is None:
+                analysis_map[succ_pc] = succ
                 worklist.append(succ_pc)
+            else:
+                new_joined_state = old_state.join(succ)
+                if not new_joined_state.is_le(old_state):
+                    analysis_map[succ_pc] = new_joined_state
+                    worklist.append(succ_pc)
+    return final
 
-logger.debug(f"Total instructions executed: {instruction_count}")
+if __name__ == "__main__":
+    logger.remove()
+    logger.add(sys.stderr, format="[{level}] {message}")
 
-if 'divide by zero' in final:
-    print("divide by zero")
-elif 'assertion error' in final:
-    print("assertion error")
-elif 'ok' in final:
-    print("ok")
-elif final:
-    print(f"Analysis finished, encountered terminal states: {set(final)}")
-else:
-    print("*") #Analysis terminated by reaching the fixed bound before finding a conclusive state.
+    # It is possible getcase is not available during framework loading, 
+    # so this protection saves the tool from crashing.
+    if hasattr(jpamb, 'getcase'):
+        methodid, input = jpamb.getcase()
+        state = create_initial_abstract_state(methodid, input)
+        final = run_abstract_interpreter(state, MAX_ITERATIONS)
+
+        if 'divide by zero' in final:
+            print("divide by zero")
+        elif 'assertion error' in final:
+            print("assertion error")
+        elif 'ok' in final:
+            print("ok")
+        elif final:
+            print(f"Analysis finished, encountered terminal states: {set(final)}")
+        else:
+            print("*") 
+    else:
+        print("jpamb.getcase() not available or running in library mode.")
 
 def number_of_args():
     return

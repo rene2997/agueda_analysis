@@ -6,7 +6,7 @@ import jpamb
 from jpamb import jvm
 from jpamb.model import Suite
 from .core import Bytecode, Finding, AnalysisTool
-from .tools import AssertTool, DivZeroTool, NullTool, OOBTool, LoopTool
+from .tools import AssertTool, DivZeroTool, NullTool, OOBTool, LoopTool, AInTool
 import sys
 
 
@@ -198,6 +198,7 @@ def main():
     ## Implement later
     # ast = analyzer.parse_bytecode(args.target)
 
+    analyzer.register(AInTool())
     analyzer.register(LoopTool())
     analyzer.register(OOBTool())
     analyzer.register(AssertTool())

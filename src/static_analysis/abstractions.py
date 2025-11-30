@@ -63,7 +63,7 @@ class PerVarFrame[AV]:
     def copy(self):
         return PerVarFrame(
             locals=self.locals.copy(),
-            stack=Stack(self.stack.items.copy()),
+            stack=self.stack.__class__(self.stack.items.copy()),
             pc=PC(self.pc.method, self.pc.offset)
         )
     
@@ -100,14 +100,9 @@ class PerVarFrame[AV]:
         joined_locals = {}
         all_keys = set(self.locals) | set(other.locals)
         for k in all_keys:
-            value1 = self.locals.get(k)
-            value2 = other.locals.get(k)
-            if value1 is None:
-                joined_locals[k] = value2
-            elif value2 is None:
-                joined_locals[k] = value1
-            else: 
-                joined_locals[k] = Sign.join(value1, value2)
+            value1 = self.locals.get(k, Sign.bottom())
+            value2 = other.locals.get(k, Sign.bottom())
+            joined_locals[k] = value1.join(value2)
         len1 = len(self.stack.items)
         len2 = len(other.stack.items)
         stack_max_len = max(len1, len2)
@@ -115,8 +110,8 @@ class PerVarFrame[AV]:
         for i in range(stack_max_len):
             value1 = self.stack.items[i] if i < len1 else Sign.bottom()
             value2 = other.stack.items[i] if i < len2 else Sign.bottom()
-            joined_stack_items.append(Sign.join(value1, value2))
-        joined_stack = Stack(joined_stack_items)
+            joined_stack_items.append(value1.join(value2))
+        joined_stack = OperandStack(joined_stack_items)
 
         return PerVarFrame(joined_locals, joined_stack, self.pc)
  
@@ -214,16 +209,17 @@ class Sign:
     def top():
         return Sign(("+", "-", "0"))
     
+    @staticmethod
     def bottom():
         return Sign(set())
  
     def is_le(self, other) -> bool:
         return self.values <= other.values
  
-    def join(self, other) -> bool:
+    def join(self, other):
         return Sign(self.values | other.values)
     
-    def meet(self, other) -> bool:
+    def meet(self, other):
         return Sign(self.values & other.values)
  
     @staticmethod
