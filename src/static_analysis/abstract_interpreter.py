@@ -1,16 +1,20 @@
 from unittest import case
 import jpamb
 from jpamb import jvm
+from jpamb.model import Suite
 from dataclasses import dataclass
 import sys
 from loguru import logger
-from abstractions import Sign, AState, PerVarFrame, PC, OperandStack, Stack
+try:
+    from .abstractions import Sign, AState, PerVarFrame, PC, OperandStack, Stack
+except ImportError:
+    from abstractions import Sign, AState, PerVarFrame, PC, OperandStack, Stack
 
 MAX_ITERATIONS = 1000000
 
 @dataclass
 class Bytecode:
-    suite: jpamb.Suite
+    suite: Suite
     methods: dict[jvm.AbsMethodID, list[jvm.Opcode]]
 
     def __getitem__(self, pc: PC) -> jvm.Opcode:
@@ -22,7 +26,7 @@ class Bytecode:
 
         return opcodes[pc.offset]
 
-suite = jpamb.Suite()
+suite = Suite()
 bc = Bytecode(suite, dict())
 
 def step(state: AState) -> list[AState | str]:
@@ -30,11 +34,11 @@ def step(state: AState) -> list[AState | str]:
     frame = state.frames.peek()
     opr = bc[frame.pc]
     print(f"@@COV {frame.pc.method} {frame.pc.offset}")
-    logger.debug(f"STEP {opr}\n{state}")
+    #logger.debug(f"STEP {opr}\n{state}")
 
     match opr:
         case jvm.Push(value=v):
-            logger.debug(f"v in PUSH is: {v}")
+            #logger.debug(f"v in PUSH is: {v}")
             av = Sign.abstract(v.value)
             new = state.copy()
             newf = new.frames.peek()
@@ -44,7 +48,7 @@ def step(state: AState) -> list[AState | str]:
         
         case jvm.Load(type=t, index=i):
             v = frame.locals[i]
-            logger.debug(f"v in LOAD is: {v}")
+            #logger.debug(f"v in LOAD is: {v}")
             new = state.copy()
             newf = new.frames.peek()
             newf.stack.push(v)
@@ -271,7 +275,7 @@ def run_abstract_interpreter(AState:AState, max_iterations:int) -> list[AState |
     final = [] #holds final states
     instruction_count = 0
     while worklist:
-        logger.debug(f"WORKLIST: {worklist}")
+        #logger.debug(f"WORKLIST: {worklist}")
 
         if instruction_count >= max_iterations:
             logger.warning(f"Analysis terminated: Fixed bound of {max_iterations} transitions reached.")
@@ -301,26 +305,29 @@ def run_abstract_interpreter(AState:AState, max_iterations:int) -> list[AState |
                     worklist.append(succ_pc)
     return final
 
-logger.remove()
-logger.add(sys.stderr, format="[{level}] {message}")
+if __name__ == "__main__":
+    logger.remove()
+    logger.add(sys.stderr, format="[{level}] {message}")
 
-methodid, input = jpamb.getcase()
-state = create_initial_abstract_state(methodid, input)
-final = run_abstract_interpreter(state, MAX_ITERATIONS)
+    # It is possible getcase is not available during framework loading, 
+    # so this protection saves the tool from crashing.
+    if hasattr(jpamb, 'getcase'):
+        methodid, input = jpamb.getcase()
+        state = create_initial_abstract_state(methodid, input)
+        final = run_abstract_interpreter(state, MAX_ITERATIONS)
 
-if 'divide by zero' in final:
-    print("divide by zero")
-elif 'assertion error' in final:
-    print("assertion error")
-elif 'ok' in final:
-    print("ok")
-elif final:
-    print(f"Analysis finished, encountered terminal states: {set(final)}")
-else:
-    print("*") #Analysis terminated by reaching the fixed bound before finding a conclusive state.
-
-
-
+        if 'divide by zero' in final:
+            print("divide by zero")
+        elif 'assertion error' in final:
+            print("assertion error")
+        elif 'ok' in final:
+            print("ok")
+        elif final:
+            print(f"Analysis finished, encountered terminal states: {set(final)}")
+        else:
+            print("*") 
+    else:
+        print("jpamb.getcase() not available or running in library mode.")
 
 def number_of_args():
     return

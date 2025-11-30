@@ -7,7 +7,8 @@ import jpamb
 from jpamb import jvm
 from jpamb.model import Suite
 from .core import Bytecode, Finding, AnalysisTool
-
+from .abstract_interpreter import create_initial_abstract_state, run_abstract_interpreter, bc, PerVarFrame, Stack, AState, jvm
+from .abstractions import Sign
 
 class AssertTool:
     def analyze(self, m: Bytecode):
@@ -97,3 +98,59 @@ class LoopTool:
             if back_edge
             else []
         )
+
+
+class AInTool:
+    """
+    Abstract Interpretation Tool.
+    """
+    def analyze(self, m: Bytecode) -> list[Finding]:
+        print(f"--- [AInTool] Analyzing: {m.mid} ---")
+        
+        bc.methods[m.mid] = m.ops
+
+        case_input = getattr(m, "case_input", None)
+        initial_state = None
+
+        if case_input is not None:
+            print(f"[AInTool] Mode: Concrete Execution. Input: {case_input}")
+            initial_state = create_initial_abstract_state(m.mid, case_input)
+        else:
+            print(f"[AInTool] Mode: Static Analysis. Initializing to TOP.")
+            
+            frame = PerVarFrame.from_method(m.mid)
+            params = m.mid.extension.params 
+            
+            for i, param_type in enumerate(params):
+                if isinstance(param_type, jvm.Boolean):
+                    abstract_val = Sign.top() 
+                elif isinstance(param_type, jvm.Int):
+                    abstract_val = Sign.top()
+                elif isinstance(param_type, jvm.Reference):
+                    abstract_val = Sign.top() 
+                else:
+                    abstract_val = Sign.top()
+
+                frame.locals[i] = abstract_val
+
+            initial_state = AState({}, Stack.empty().push(frame))
+
+        terminal_results = run_abstract_interpreter(initial_state, max_iterations=1000)
+        print(f"[AInTool] Results: {terminal_results}")
+
+        findings = []
+        for result in set(terminal_results):
+            if not isinstance(result, str): continue
+
+            finding_kind = None
+            if result == "divide by zero": finding_kind = "divzero"
+            elif result == "assertion error": finding_kind = "assert"
+            elif result == "out of bounds": finding_kind = "oob"
+            elif result == "null pointer": finding_kind = "null"
+            elif result == "*": finding_kind = "loop"
+
+            if finding_kind:
+                print(f"[AInTool] >>> FOUND ERROR: {finding_kind} <<<")
+                findings.append(Finding(kind=finding_kind, pc=-1, evidence="certain"))
+
+        return findings
