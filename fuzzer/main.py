@@ -3,6 +3,7 @@ import json
 
 from config import FuzzerConfig
 from fuzzer_engine import FuzzerEngine
+from fuzzer_api import start_fuzzing
 
 def main():
     parser = argparse.ArgumentParser(description="Java Coverage-Guided Fuzzer with Static Analysis Seeds")
@@ -35,19 +36,31 @@ def main():
         return
 
     # Initialize configuration
-    config = FuzzerConfig(
-        java_class_path=args.java_class_path,
+    # config = FuzzerConfig(
+    #     java_class_path=args.java_class_path,
+    #     target_method=target_method,
+    #     guided_seeds = guided_seeds,
+    #     agent_path=args.agent_path,
+    #     max_iterations=args.max_iter,
+    #     seed_count=args.seed_count,
+    #     coverage_map_size=args.coverage_map_size
+    # )
+
+    # invoke API method
+    fuzzing_results = start_fuzzing(
         target_method=target_method,
-        guided_seeds = guided_seeds,
+        guided_seeds=guided_seeds,
+        java_class_path=args.java_class_path,
         agent_path=args.agent_path,
         max_iterations=args.max_iter,
         seed_count=args.seed_count,
         coverage_map_size=args.coverage_map_size
     )
 
+    print("\n[Main] Fuzzing complete. Final results received.")
     # Start the fuzzer
-    fuzzer = FuzzerEngine(config)
-    fuzzer.run()
+    # fuzzer = FuzzerEngine(config)
+    # fuzzer.run()
 
 if __name__ == "__main__":
     main()

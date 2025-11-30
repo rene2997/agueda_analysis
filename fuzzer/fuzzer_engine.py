@@ -89,7 +89,7 @@ class FuzzerEngine:
 
             # Print progress (every 1000 iterations)
             if iteration % 1000 == 0:
-                coverage_stats = self.coverage_tracker.get_coverage_stats2()
+                coverage_stats = self.coverage_tracker.get_coverage_stats()
                 print(
                     f"Iteration {iteration:5d} | "
                     f"Corpus size {self.corpus_manager.size():4d} | "
@@ -97,10 +97,10 @@ class FuzzerEngine:
                     f"Errors {self.error_detector.error_count()}"
                 )
         # Output test summary
-        self._print_summary()
+        # self._print_summary()
 
     def _print_summary(self):
-        coverage_stats = self.coverage_tracker.get_coverage_stats2()
+        coverage_stats = self.coverage_tracker.get_coverage_stats()
         print("\n" + "="*50)
         print("Fuzzing finished")
         print("="*50)
@@ -114,3 +114,37 @@ class FuzzerEngine:
                 print(f"\n{i}. Input: {error['input']}")
                 print(f"   Error type: {error['error_type']}")
                 print(f"   Error message: {error['error_message'][:1000]}...")  # Truncate to the first 1000 characters
+
+    def get_summary(self) -> dict:
+        """
+        Gathers the final results of the fuzzing session.
+
+        Returns:
+            A dictionary containing final statistics and crash details.
+        """
+        coverage_stats = self.coverage_tracker.get_coverage_stats()
+        crashes = self.error_detector.get_errors()
+
+        summary = {
+            "total_iterations": self.config.max_iterations,
+            "corpus_size": self.corpus_manager.size(),
+            "total_covered_branches": coverage_stats['total_covered_branches'],
+            "crash_count": len(crashes),
+            "crashes": crashes
+        }
+
+        # Also print the summary for interactive use
+        print("\n" + "=" * 50)
+        print("Fuzzing finished")
+        print("=" * 50)
+        print(f"Total iterations：{summary['total_iterations']}")
+        print(f"Number of valid test cases：{summary['corpus_size']}")
+        print(f"Total number of covered branches：{summary['total_covered_branches']}")
+        print(f"Number of detected errors：{summary['crash_count']}")
+        if summary['crashes']:
+            print("\nError details：")
+            for i, error in enumerate(summary['crashes'], 1):
+                print(f"\n{i}. Input：{error['input']}")
+                print(f"   Error type：{error['error_type']}")
+
+        return summary
