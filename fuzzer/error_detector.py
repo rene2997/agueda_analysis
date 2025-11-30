@@ -20,8 +20,8 @@ class ErrorDetector:
         self.seen_errors.add(error_hash)
         self.errors.append({
             "input": input_data,
-            "error_message": error_msg,
-            "error_type": self._extract_error_type(error_msg)  # Extract the error type (e.g., AssertionError)
+            "error_message": error_msg
+            # "error_type": self._extract_error_type(error_msg)  # Extract the error type (e.g., AssertionError)
         })
         return True
 

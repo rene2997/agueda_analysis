@@ -61,7 +61,12 @@ class FuzzerEngine:
         # First, execute all seeds in the initial corpus once
         print("Testing the initial corpus...")
         for seed in initial_seeds_to_test:
-            self.coverage_tracker.track_execution(self.java_runner, seed)
+            has_new_coverage, is_crash = self.coverage_tracker.track_execution(self.java_runner, seed)
+            if is_crash:
+                # This is an important discovery! Record it.
+                # Error details have been printed in coverage_tracker, here we only record the event itself.
+                self.error_detector.detect(seed, "Java Exception Detected (see console for details)")
+
         print("Initial corpus testing complete.")
 
         iteration = 0
@@ -75,15 +80,17 @@ class FuzzerEngine:
                 new_input = self.input_generator.mutate(original_input)
 
                 # 3. Execute the Java program, track coverage and exceptions
-                has_new_coverage, error_msg = self.coverage_tracker.track_execution(
+                has_new_coverage, is_crash = self.coverage_tracker.track_execution(
                     self.java_runner, new_input
                 )
 
-                # 4. Detect and record errors
-                if error_msg:
-                    self.error_detector.detect(new_input, error_msg)
+                # 4. Detect and record errors, using the is_crash signal
+                if is_crash:
+                    # This is an important discovery! Record it.
+                    # Error details have been printed in coverage_tracker, here we only record the event itself.
+                    self.error_detector.detect(new_input, "Java Exception Detected (see console for details)")
 
-                # 5. If there is new coverage, add the input to the corpus
+                # 5. If this input discovers new coverage, it is valuable.
                 if has_new_coverage:
                     self.corpus_manager.add(new_input)
 
@@ -97,23 +104,7 @@ class FuzzerEngine:
                     f"Errors {self.error_detector.error_count()}"
                 )
         # Output test summary
-        # self._print_summary()
-
-    def _print_summary(self):
-        coverage_stats = self.coverage_tracker.get_coverage_stats()
-        print("\n" + "="*50)
-        print("Fuzzing finished")
-        print("="*50)
-        print(f"Total iterations: {self.config.max_iterations}")
-        print(f"Number of valid test cases: {self.corpus_manager.size()}")
-        print(f"Total number of covered branches: {coverage_stats['total_covered_branches']}")
-        print(f"Number of detected errors: {self.error_detector.error_count()}")
-        if self.error_detector.get_errors():
-            print("\nError details:")
-            for i, error in enumerate(self.error_detector.get_errors(), 1):
-                print(f"\n{i}. Input: {error['input']}")
-                print(f"   Error type: {error['error_type']}")
-                print(f"   Error message: {error['error_message'][:1000]}...")  # Truncate to the first 1000 characters
+        self.get_summary()
 
     def get_summary(self) -> dict:
         """
@@ -137,14 +128,14 @@ class FuzzerEngine:
         print("\n" + "=" * 50)
         print("Fuzzing finished")
         print("=" * 50)
-        print(f"Total iterations：{summary['total_iterations']}")
-        print(f"Number of valid test cases：{summary['corpus_size']}")
-        print(f"Total number of covered branches：{summary['total_covered_branches']}")
-        print(f"Number of detected errors：{summary['crash_count']}")
+        print(f"Total iterations: {summary['total_iterations']}")
+        print(f"Number of valid test cases: {summary['corpus_size']}")
+        print(f"Total number of covered branches: {summary['total_covered_branches']}")
+        print(f"Number of detected errors: {summary['crash_count']}")
         if summary['crashes']:
-            print("\nError details：")
+            print("\nError details:")
             for i, error in enumerate(summary['crashes'], 1):
-                print(f"\n{i}. Input：{error['input']}")
-                print(f"   Error type：{error['error_type']}")
+                print(f"\n{i}. Input: {error['input']}")
+                print(f"   Error message: {error['error_message']}")
 
         return summary
