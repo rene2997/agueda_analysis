@@ -129,7 +129,7 @@ def step(state: AState) -> list[AState | str]:
         case jvm.Ifz(condition=c, target=t):
             v = frame.stack.pop()
             vals = v.values
-            print(f"vals in Ifz: {vals}")
+            #print(f"vals in Ifz: {vals}")
             #assert v.type == jvm.Int()
             jump_possible = False
             nojump_possible = False
