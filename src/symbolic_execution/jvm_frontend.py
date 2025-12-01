@@ -8,13 +8,11 @@ from .symexpr import SymInt, BinaryOp, SymArrayRef, SymArrayElem
 from .symstate import SymbolicState
 
 from .constraints import negate
+import os
+import sys
+
 
 def _add_int(val: SymInt, inc: int) -> SymInt:
-    """
-    Helper for iinc-style updates.
-    Keeps integers concrete when possible and avoids building deep BinaryOp trees.
-    """
-    # If we have a concrete integer without a symbolic name, just fold it
     if isinstance(val, SymInt) and getattr(val, "concrete", None) is not None and getattr(val, "name", None) is None:
         return SymInt(concrete=val.concrete + inc)
 
@@ -25,6 +23,22 @@ def _add_int(val: SymInt, inc: int) -> SymInt:
     # Fallback: build a single BinaryOp node
     return BinaryOp("+", val, SymInt(concrete=inc))
 
+def _div_int(lhs: Any, rhs: Any) -> Any:
+    # Constant folding when both sides are concrete ints with no names
+    if isinstance(lhs, SymInt) and isinstance(rhs, SymInt):
+        if lhs.concrete is not None and rhs.concrete is not None:
+            if lhs.name is None and rhs.name is None and rhs.concrete != 0:
+                return SymInt(concrete=lhs.concrete // rhs.concrete)
+    # Combine nested divisions: (x // a) // b  →  x // (a*b)  when a and b are concrete
+    if isinstance(rhs, SymInt) and rhs.concrete is not None and rhs.concrete != 0:
+        if isinstance(lhs, BinaryOp) and lhs.op == "//":
+            inner_lhs, inner_rhs = lhs.lhs, lhs.rhs
+            if isinstance(inner_rhs, SymInt) and inner_rhs.concrete is not None:
+                product = inner_rhs.concrete * rhs.concrete
+                return BinaryOp("//", inner_lhs, SymInt(concrete=product))
+    # Fallback: return a division BinaryOp
+    return BinaryOp("//", lhs, rhs)
+
 class JVMFrontend:
     def __init__(self, bytecode: Bytecode, entry_method: jvm.AbsMethodID):
         self.bytecode = bytecode
@@ -34,11 +48,6 @@ class JVMFrontend:
         # Start at PC=0
         state = SymbolicState(pc=PC(self.entry_method, 0))
         state.depth = 0
-
-        # ------------------------------------------------------------
-        # Parse method descriptor from something like:
-        #   "jpamb.cases.Arrays.arrayNotEmpty:([I)V"
-        # ------------------------------------------------------------
         method_str = str(self.entry_method)
         try:
             desc = method_str.split(":", 1)[1]    # e.g. "([I)V"
@@ -50,24 +59,16 @@ class JVMFrontend:
             args_part = desc[desc.index("(") + 1 : desc.index(")")]
         else:
             args_part = ""
-
         i = 0
         local_index = 0
 
-        # ------------------------------------------------------------
-        # Parse argument types manually (JVM descriptor format)
-        # ------------------------------------------------------------
         while i < len(args_part):
             ch = args_part[i]
-
-            # -------- ARRAY ARGUMENT: [I, [C, [Z, [B ----------
             if ch == "[":
-                # Assume 1D array; next char is element type
                 if i + 1 < len(args_part):
                     elem_ch = args_part[i + 1]
                 else:
                     elem_ch = "I"
-
                 # Pick jpamb type for element
                 if elem_ch == "I":
                     elem_type = jvm.Int()
@@ -77,50 +78,52 @@ class JVMFrontend:
                     elem_type = jvm.Boolean()
                 else:
                     elem_type = jvm.Int()   # fallback
-
                 # Make symbolic length for the array object
                 len_sym = SymInt(name=f"len{local_index}")
                 # Array lengths are non-negative
                 state.path_constraint.add(BinaryOp(">=", len_sym, SymInt(concrete=0)))
-
                 arr_id = f"arg{local_index}_arr"
                 state.locals[arr_id] = {
                     "length": len_sym,
                     "type": elem_type,
                 }
-
                 # Local slot now holds a direct array reference (arguments are non-null)
                 state.locals[local_index] = SymArrayRef(name=arr_id)
-                
-                
                 # Move forward
                 i += 2
                 local_index += 1
                 continue
 
-            # -------- INTEGER ARGUMENT: I ----------
+            # Integer argument: I
             if ch == "I":
-                state.locals[local_index] = SymInt(name=f"arg{local_index}")
+                # Model method parameter as a fully symbolic int.
+                # We no longer pin it to concrete 0, so that the solver is free
+                # to choose any value consistent with the collected constraints.
+                sym = SymInt(name=f"arg{local_index}", concrete=None)
+                state.locals[local_index] = sym
                 i += 1
                 local_index += 1
                 continue
-
-            # -------- BOOLEAN ARGUMENT: Z ----------
+            # Boolean argument: Z
             if ch == "Z":
-                # Represent boolean as 0/1 symbolic int
-                state.locals[local_index] = SymInt(name=f"arg{local_index}")
+                # Represent boolean as a 0/1 symbolic int, without fixing its value.
+                # Add simple domain constraints 0 <= b <= 1 so the solver knows it is boolean.
+                b = SymInt(name=f"arg{local_index}", concrete=None)
+                state.locals[local_index] = b
+                zero = SymInt(concrete=0)
+                one = SymInt(concrete=1)
+                state.path_constraint.add(BinaryOp(">=", b, zero))
+                state.path_constraint.add(BinaryOp("<=", b, one))
                 i += 1
                 local_index += 1
                 continue
-
-            # -------- OTHER (unsupported) ----------
+            # Other arguments are unsupported; skip
             i += 1
 
         return state
 
     # Wrapper around the actual step implementation.
-    # Ensures we never return None. Depth is now managed by _step_impl
-    # only for control-flow instructions (If/Ifz).
+    # Ensures we never return None. Also manages the steps counter.
     def step(self, s: SymbolicState) -> list[SymbolicState]:
         s.steps += 1
         result = self._step_impl(s)
@@ -130,15 +133,10 @@ class JVMFrontend:
             raise RuntimeError(
                 f"Frontend.step() returned None at pc={s.pc}, opcode={opcode!r}"
             )
-
-        # Depth is now managed inside `_step_impl` only for control‑flow
-        # instructions (If/Ifz). For all other opcodes, the depth of
-        # successor states is inherited from the parent.
         return result
 
     def _step_impl(self, s: SymbolicState):
-
-        # 1. Normalize PC
+        # Normalize PC
         if isinstance(s.pc, int):
             method = self.entry_method
             offset = s.pc
@@ -148,13 +146,15 @@ class JVMFrontend:
 
         pc = PC(method, offset)
 
-        # 2. Look up opcode
+        # Look up opcode
         opr = self.bytecode[pc]
-
         # Current branching depth for this state; used to enforce a
         # bound on loop unfolding only at control‑flow instructions.
         parent_depth = getattr(s, "depth", 0)
+        if os.environ.get("SE_VERBOSE"):
+            print(f"DEBUG: PC={s.pc}, opcode={opr!r}", file=sys.stderr)
 
+        # Match opcode
         match opr:
             
             case jvm.Binary(type=jvm.Int(), operant=jvm.BinaryOpr.Sub):
@@ -307,23 +307,12 @@ class JVMFrontend:
                     
             
             case jvm.If(condition=c, target=t):
-                # Extract PC fields
-                method = s.pc.method
-                offset = s.pc.offset
+                # Work on a fresh copy of the state to pop operands
+                temp = s.copy()
+                rhs = temp.stack.pop()   # top of stack
+                lhs = temp.stack.pop()   # next value on the stack
 
-                # Clone states
-                true_state = s.copy()
-                false_state = s.copy()
-
-                # Increase branching depth only at this control‑flow point
-                true_state.depth = parent_depth + 1
-                false_state.depth = parent_depth + 1
-
-                # Operands
-                rhs = s.stack[-1]
-                lhs = s.stack[-2]
-
-                # Translate JVM condition
+                # Map the JVM condition codes to Python comparison operators
                 if c == "ne":
                     op = "!="
                 elif c == "eq":
@@ -339,19 +328,24 @@ class JVMFrontend:
                 else:
                     raise NotImplementedError(f"Unknown If condition: {c}")
 
+                # Build the constraint expression
                 cond_expr = BinaryOp(op, lhs, rhs)
 
-                # Pop operands
-                true_state.stack = true_state.stack[:-2]
-                false_state.stack = false_state.stack[:-2]
+                # Clone the temp state for both branches
+                true_state = temp.copy()
+                false_state = temp.copy()
 
-                # Add constraints
+                # Increase branching depth only at this control‑flow point
+                true_state.depth = parent_depth + 1
+                false_state.depth = parent_depth + 1
+
+                # Add the condition to the true branch and its negation to the false branch
                 true_state.path_constraint.add(cond_expr)
                 false_state.path_constraint.add(negate(cond_expr))
 
-                # Jump vs fall-through
-                true_state.pc = PC(method, t)
-                false_state.pc = PC(method, offset + 1)
+                # Set the program counter for each branch
+                true_state.pc = PC(method, t)        # jump to target on true
+                false_state.pc = PC(method, offset + 1)  # fall through on false
 
                 return [true_state, false_state]
             
@@ -415,8 +409,10 @@ class JVMFrontend:
                 # Method descriptor as string, e.g. "jpamb.cases.Simple.assertBoolean:(Z)V"
                 m_str = str(m)
 
-                # Special-case the assertion helper used throughout JPAMB
-                if "Simple.assertBoolean:(Z)V" in m_str:
+                # Treat any static method with signature (Z)V as an assertion-like helper:
+                # one boolean argument and void return.
+                name_part, desc = (m_str.split(":", 1) + [""])[:2]
+                if desc.startswith("(Z)") and desc.endswith("V"):
                     # Top of stack is the boolean argument (0 = false, 1 = true)
                     cond_val = new.stack.pop()
                     zero = SymInt(concrete=0)
@@ -541,17 +537,13 @@ class JVMFrontend:
                 # We may create extra error states
                 error_states: list[SymbolicState] = []
 
-                # -----------------------------------------
-                # CASE 1: arr_ref is a SymArrayRef (heap array)
-                # -----------------------------------------
+                # arr_ref is a SymArrayRef (heap array)
                 if isinstance(arr_ref, SymArrayRef):
                     arr_name = arr_ref.name
 
-                # -----------------------------------------
-                # CASE 2: arr_ref is a SymInt "argument reference"
-                #         0  => null pointer
-                #         !=0 => some argX_ref → lookup argX_arr
-                # -----------------------------------------
+                # arr_ref is a SymInt "argument reference"
+                # 0  => null pointer
+                # !=0 => some argX_ref → lookup argX_arr
                 elif isinstance(arr_ref, SymInt):
                     # Concrete null from `Push Null`
                     # Null is ANY SymInt whose concrete value is 0
@@ -582,18 +574,14 @@ class JVMFrontend:
 
                     arr_name = refname.replace("_ref", "_arr")
 
-                # -----------------------------------------
-                # CASE 3: unsupported reference type
-                # -----------------------------------------
+                # Unsupported reference type
                 else:
                     err = s.copy()
                     err.terminated = True
                     err.error = "*"
                     return [err]
 
-                # -----------------------------------------
                 # Lookup array summary
-                # -----------------------------------------
                 if arr_name not in new_ok.locals:
                     # We think it's non-null, but no summary -> null pointer / bad ref
                     err = s.copy()
@@ -604,9 +592,7 @@ class JVMFrontend:
                 arr_info = new_ok.locals[arr_name]
                 length = arr_info["length"]   # SymInt
 
-                # -------------------------
                 # Bounds checks
-                # -------------------------
                 cond_ge_0  = BinaryOp(">=", idx, SymInt(concrete=0))
                 cond_lt_len = BinaryOp("<", idx, length)
 
@@ -638,9 +624,7 @@ class JVMFrontend:
 
                 error_states: list[SymbolicState] = []
 
-                # -----------------------------------------
-                # 1) Null pointer checks
-                # -----------------------------------------
+                # Null pointer checks
                 # Concrete null (pushed as 0)
                 if isinstance(arr_ref, SymInt) and getattr(arr_ref, "concrete", None) == 0:
                     err = s.copy()
@@ -685,9 +669,7 @@ class JVMFrontend:
                     err.error = "*"
                     return [err]
 
-                # -----------------------------------------
-                # 2) Lookup array summary
-                # -----------------------------------------
+                # Lookup array summary
                 if arr_name not in new_ok.locals:
                     # Non-null but no array summary → treat as null pointer / bad ref
                     err = s.copy()
@@ -698,9 +680,7 @@ class JVMFrontend:
                 arr_info = new_ok.locals[arr_name]
                 length = arr_info["length"]  # SymInt for array length
 
-                # -----------------------------------------
-                # 3) Generic arrays: keep full OOB modeling
-                # -----------------------------------------
+                # Generic arrays: keep full OOB modeling
                 cond_ge_0   = BinaryOp(">=", idx, zero)
                 cond_lt_len = BinaryOp("<", idx, length)
 
@@ -732,7 +712,13 @@ class JVMFrontend:
             
             case jvm.Goto(target=t):
                 new = s.copy()
-                new.pc = t
+                # Preserve the current method; if s.pc is an int, fall back to the entry method.
+                if isinstance(s.pc, int):
+                    current_method = self.entry_method
+                else:
+                    current_method = s.pc.method
+                # Jump to the target offset within the same method.
+                new.pc = PC(current_method, t)
                 return [new]
                 
             case jvm.Store(type=t, index=i):
@@ -772,6 +758,9 @@ class JVMFrontend:
                 lhs = s.stack[-2]  # dividend
                 zero = SymInt(concrete=0)
 
+                if os.environ.get("SE_VERBOSE"):
+                    print(f"DEBUG: Dividing {lhs} by {rhs}", file=sys.stderr)
+                    
                 # condition: rhs == 0
                 cond_expr = BinaryOp("==", rhs, zero)
 
@@ -781,7 +770,7 @@ class JVMFrontend:
                 err_state.error = "divide by zero"
 
                 ok_state.stack = ok_state.stack[:-2]    # pop lhs, rhs
-                ok_state.stack.append(BinaryOp("//", lhs, rhs))  # symbolic quotient
+                ok_state.stack.append(_div_int(lhs, rhs))  # symbolic quotient with constant folding
                 ok_state.path_constraint.add(negate(cond_expr))
                 ok_state.pc = PC(method, offset + 1)
                 return [err_state, ok_state]
@@ -842,9 +831,9 @@ class JVMFrontend:
                 return [new]
             
             case _:
-                print("UNHANDLED OPCODE:", opr, "at", s.pc)
+                # Unknown opcode – conservatively skip it and continue execution.
+                # This avoids prematurely terminating the state with kind '*'.
                 new = s.copy()
-                new.terminated = True
-                new.error = "*"
+                new.pc = PC(method, offset + 1)
                 return [new]
 

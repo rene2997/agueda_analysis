@@ -7,28 +7,33 @@ from .path import PathConstraint
 from .symexpr import SymExpr, SymInt, SymBool, BinaryOp, SymArrayElem
 
 
+from z3 import Solver as Z3Solver, Int, IntVal, BoolVal, Bool, Not, sat
+
 class Solver:
     def __init__(self):
-        self._elem_cache: dict[int, Any] = {}
-        pass
+        self._elem_cache: Dict[int, Any] = {}
 
     def is_sat(self, path: PathConstraint) -> bool:
         z3 = Z3Solver()
         for c in path.constraints:
             z3.add(self._to_z3(c))
-        return z3.check().r == 1   # 1 = sat
+        return z3.check() == sat  # use direct comparison to z3.sat
 
     def get_model(self, path: PathConstraint) -> Dict[str, Any]:
         z3 = Z3Solver()
         for c in path.constraints:
             z3.add(self._to_z3(c))
-        if z3.check().r != 1:
+        if z3.check() != sat:
             return {}
         model = z3.model()
-
-        out = {}
-        for name, val in model:
-            out[str(name)] = model[val].as_long()
+        out: Dict[str, Any] = {}
+        for d in model.decls():             # iterate over declarations
+            v = model[d]
+            if v is not None:
+                try:
+                    out[str(d.name())] = v.as_long()
+                except AttributeError:
+                    out[str(d.name())] = v  # fall back for non‑integers
         return out
 
     def _to_z3(self, expr: SymExpr):

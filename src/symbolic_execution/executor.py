@@ -56,7 +56,15 @@ class SymbolicExecutor:
 
                 state_for_finding = state.copy()
                 state_for_finding.error = label
-                findings.append(Finding.from_state(state_for_finding))
+                findings.append(
+                    Finding(
+                        kind=label,
+                        pc=state_for_finding.pc,
+                        path_constraint=state_for_finding.path_constraint.copy(),
+                        return_value=getattr(state_for_finding, "return_value", None),
+                        state=state_for_finding.copy(),
+                    )
+                )
                 if self.config.debug:
                     print(
                         f"[FINDING] {label} at {state.pc} "
@@ -128,7 +136,15 @@ class SymbolicExecutor:
                 label = state.error or "ok"
                 state_for_finding = state.copy()
                 state_for_finding.error = label
-                findings.append(Finding.from_state(state_for_finding))
+                findings.append(
+                    Finding(
+                        kind=label,
+                        pc=state_for_finding.pc,
+                        path_constraint=state_for_finding.path_constraint.copy(),
+                        return_value=getattr(state_for_finding, "return_value", None),
+                        state=state_for_finding.copy(),
+                    )
+                )
                 if self.config.debug:
                     print(
                         f"[FINDING-IMPLICIT] {label} at {state.pc} "
@@ -151,6 +167,14 @@ class SymbolicExecutor:
             cut = initial_state.copy()
             cut.terminated = True
             cut.error = "*"
-            findings.append(Finding.from_state(cut))
+            findings.append(
+                Finding(
+                    kind="*",
+                    pc=cut.pc,
+                    path_constraint=cut.path_constraint.copy(),
+                    return_value=getattr(cut, "return_value", None),
+                    state=cut.copy(),
+                )
+            )
 
         return findings

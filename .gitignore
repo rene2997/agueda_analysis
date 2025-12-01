@@ -1,13 +1,27 @@
-
-*.log
-**/__pycache__/
-**/*.py[cod]
-.venv/
+# IDE/editor
 .vscode/
 .idea/
 .DS_Store
+
+# Python bytecode / env
+__pycache__/
+*.py[cod]
+.venv/
+.uv/
 *.egg-info/
 dist/
 build/
+
+# Tests (if you *really* want to exclude them)
 tests/
 pytest.ini
+
+# Logs
+*.log
+
+# Coverage / fuzzing outputs
+bytescribe-map.csv
+per-edge.csv
+bytescribe.cov
+*.cov
+coverage*.dat

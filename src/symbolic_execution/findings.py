@@ -12,14 +12,19 @@ class Finding:
     pc: int
     path_constraint: Any
     return_value: Any = None
+    state: Optional[SymbolicState] = None
 
     @staticmethod
     def from_state(state: SymbolicState) -> "Finding":
+        # If there is no error, treat this as an "ok" finding.
+        kind = state.error or "ok"
+
         return Finding(
-            kind=state.error,
+            kind=kind,
             pc=state.pc,
             path_constraint=state.path_constraint.copy(),
             return_value=getattr(state, "return_value", None),
+            state=state,
         )
 
     def __repr__(self) -> str:
