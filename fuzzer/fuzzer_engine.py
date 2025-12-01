@@ -59,15 +59,16 @@ class FuzzerEngine:
         initial_seeds_to_test = self.initialize()
 
         # First, execute all seeds in the initial corpus once
-        print("Testing the initial corpus...")
-        for seed in initial_seeds_to_test:
-            has_new_coverage, is_crash = self.coverage_tracker.track_execution(self.java_runner, seed)
-            if is_crash:
-                # This is an important discovery! Record it.
-                # Error details have been printed in coverage_tracker, here we only record the event itself.
-                self.error_detector.detect(seed, "Java Exception Detected (see console for details)")
+        if initial_seeds_to_test:
+            print("Testing the initial corpus...")
+            for seed in initial_seeds_to_test:
+                has_new_coverage, is_crash, error_msg = self.coverage_tracker.track_execution(self.java_runner, seed)
+                if is_crash:
+                    # This is an important discovery! Record it.
+                    # Error details have been printed in coverage_tracker, here we only record the event itself.
+                    self.error_detector.detect(seed, error_msg)
 
-        print("Initial corpus testing complete.")
+            print("Initial corpus testing complete.")
 
         iteration = 0
         while iteration < self.config.max_iterations and self.corpus_manager.size() > 0:
@@ -80,7 +81,7 @@ class FuzzerEngine:
                 new_input = self.input_generator.mutate(original_input)
 
                 # 3. Execute the Java program, track coverage and exceptions
-                has_new_coverage, is_crash = self.coverage_tracker.track_execution(
+                has_new_coverage, is_crash, error_msg = self.coverage_tracker.track_execution(
                     self.java_runner, new_input
                 )
 
@@ -88,7 +89,7 @@ class FuzzerEngine:
                 if is_crash:
                     # This is an important discovery! Record it.
                     # Error details have been printed in coverage_tracker, here we only record the event itself.
-                    self.error_detector.detect(new_input, "Java Exception Detected (see console for details)")
+                    self.error_detector.detect(new_input, error_msg)
 
                 # 5. If this input discovers new coverage, it is valuable.
                 if has_new_coverage:
@@ -103,8 +104,7 @@ class FuzzerEngine:
                     f"Covered branches {coverage_stats['total_covered_branches']:4d} | "
                     f"Errors {self.error_detector.error_count()}"
                 )
-        # Output test summary
-        self.get_summary()
+        return self.get_summary() # Return the summary
 
     def get_summary(self) -> dict:
         """

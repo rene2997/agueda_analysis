@@ -65,7 +65,7 @@ class JavaRunner:
         ]
 
         # 4.1 log
-        print(f"========executed java command is: {command}========")
+        # print(f"========executed java command is: {command}========") # Commented out for cleaner baseline output
 
         # 5. Execute the command
         try:
@@ -77,7 +77,7 @@ class JavaRunner:
                 command,
                 capture_output=True,
                 text=True,
-                timeout=5  # Set a timeout to prevent the program from getting stuck
+                timeout=15  # Increased timeout to 15 seconds for complex/recursive methods
             )
             # Return stderr because Java's exception stack traces are usually output to stderr
             return result.stderr

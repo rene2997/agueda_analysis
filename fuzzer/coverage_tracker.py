@@ -90,7 +90,7 @@ class CoverageTracker:
                 print(f"Warning: Java process produced neither stderr nor a coverage file. Input: {new_input}")
 
         # 4. Return the result
-        return has_new_coverage, is_crash
+        return has_new_coverage, is_crash, error_msg
 
     def get_coverage_stats(self):
         """Calculates the total number of covered edges"""
