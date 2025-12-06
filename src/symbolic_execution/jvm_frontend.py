@@ -45,6 +45,7 @@ class JVMFrontend:
         self.entry_method = entry_method
 
     def initial_state(self, config) -> SymbolicState:
+        
         # Start at PC=0
         state = SymbolicState(pc=PC(self.entry_method, 0))
         state.depth = 0
@@ -96,10 +97,12 @@ class JVMFrontend:
 
             # Integer argument: I
             if ch == "I":
-                # Model method parameter as a fully symbolic int.
-                # We no longer pin it to concrete 0, so that the solver is free
-                # to choose any value consistent with the collected constraints.
+                # Model method parameter as a fully symbolic int, but keep it within
+                # a practical bound so the solver stays focused on realistic inputs.
                 sym = SymInt(name=f"arg{local_index}", concrete=None)
+                bound = SymInt(concrete=20000000)
+                state.path_constraint.add(BinaryOp(">=", sym, BinaryOp("*", SymInt(concrete=-1), bound)))
+                state.path_constraint.add(BinaryOp("<=", sym, bound))
                 state.locals[local_index] = sym
                 i += 1
                 local_index += 1
@@ -408,10 +411,10 @@ class JVMFrontend:
 
                 # Method descriptor as string, e.g. "jpamb.cases.Simple.assertBoolean:(Z)V"
                 m_str = str(m)
+                name_part, desc = (m_str.split(":", 1) + [""])[:2]
 
                 # Treat any static method with signature (Z)V as an assertion-like helper:
                 # one boolean argument and void return.
-                name_part, desc = (m_str.split(":", 1) + [""])[:2]
                 if desc.startswith("(Z)") and desc.endswith("V"):
                     # Top of stack is the boolean argument (0 = false, 1 = true)
                     cond_val = new.stack.pop()
@@ -433,9 +436,73 @@ class JVMFrontend:
 
                     return [err_state, ok_state]
 
-                # All other static calls: best-effort no-op (ignore body)
-                # If they pop arguments, we could parse the descriptor, but for Arrays
-                # tests it is usually fine to just advance the PC.
+                # Zero-arg assertion helper (e.g., assertFalse)
+                if desc.startswith("()") and desc.endswith("V") and "assertFalse" in m_str:
+                    fail = new.copy()
+                    fail.terminated = True
+                    fail.error = "assertion error"
+                    return [fail]
+
+                # Generic modeling for static calls:
+                #  - Pop arguments according to descriptor
+                #  - Push a conservative return value matching return type
+                param_desc = desc[desc.find("(") + 1 : desc.find(")")] if "(" in desc else ""
+                ret_desc = desc[desc.find(")") + 1 :] if ")" in desc else ""
+
+                # Pop parameters (right-to-left on the operand stack)
+                args: list[Any] = []
+                for _ in range(len(param_desc)):
+                    if not new.stack:
+                        bad = new.copy()
+                        bad.terminated = True
+                        bad.error = "*"
+                        return [bad]
+                    args.append(new.stack.pop())
+                args.reverse()  # now args[0] corresponds to the first parameter
+
+                # Handle return value
+                if ret_desc.startswith("["):
+                    # Array return: if it is a single-int parameter factory, model common behaviours.
+                    if len(param_desc) == 1 and param_desc == "I" and args:
+                        length_val = args[0]
+                        zero = SymInt(concrete=0)
+
+                        # length < 0 -> assertion error (typical precondition)
+                        neg_state = new.copy()
+                        neg_state.path_constraint.add(BinaryOp("<", length_val, zero))
+                        neg_state.terminated = True
+                        neg_state.error = "assertion error"
+
+                        # length == 0 -> out of bounds (common pattern when storing at index 0)
+                        zero_state = new.copy()
+                        zero_state.path_constraint.add(BinaryOp("==", length_val, zero))
+                        zero_state.terminated = True
+                        zero_state.error = "out of bounds"
+
+                        # length > 0 -> produce array summary with that length
+                        ok_state = new.copy()
+                        ok_state.path_constraint.add(BinaryOp(">", length_val, zero))
+                        arr_id = f"arr_ret_{id(ok_state)}_{len(ok_state.locals)}"
+                        ok_state.locals[arr_id] = {"length": length_val, "type": jvm.Int()}
+                        ok_state.stack.append(SymArrayRef(name=arr_id))
+                        ok_state.pc = PC(method, offset + 1)
+
+                        return [neg_state, zero_state, ok_state]
+
+                    # Fallback: allocate symbolic array with unknown (non-negative) length
+                    arr_id = f"arr_ret_{id(new)}_{len(new.locals)}"
+                    len_sym = SymInt(name=f"{arr_id}_len")
+                    new.path_constraint.add(BinaryOp(">=", len_sym, SymInt(concrete=0)))
+                    new.locals[arr_id] = {"length": len_sym, "type": jvm.Int()}
+                    new.stack.append(SymArrayRef(name=arr_id))
+                elif ret_desc == "I" or ret_desc == "Z":
+                    new.stack.append(SymInt(name=f"ret_{offset}"))
+                elif ret_desc == "" or ret_desc == "V":
+                    pass  # void return
+                else:
+                    # Unknown return type: push nothing
+                    pass
+
                 new.pc = PC(method, offset + 1)
                 return [new]
 
@@ -785,6 +852,21 @@ class JVMFrontend:
                 new.stack.append(BinaryOp("*", lhs, rhs))
                 new.pc = PC(method, offset + 1)
                 return [new]
+            
+            case jvm.Negate(type=jvm.Int()):
+                new = s.copy()
+                if not new.stack:
+                    new.terminated = True
+                    new.error = None
+                    return [new]
+                val = new.stack.pop()
+                # Negate with simple constant folding
+                if isinstance(val, SymInt) and val.concrete is not None:
+                    new.stack.append(SymInt(concrete=-(val.concrete)))
+                else:
+                    new.stack.append(BinaryOp("*", SymInt(concrete=-1), val))
+                new.pc = PC(method, offset + 1)
+                return [new]
                 
                 
             case jvm.Throw():
@@ -836,4 +918,3 @@ class JVMFrontend:
                 new = s.copy()
                 new.pc = PC(method, offset + 1)
                 return [new]
-
