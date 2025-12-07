@@ -25,11 +25,48 @@ class Bytecode:
 suite = jpamb.Suite()
 bc = Bytecode(suite, dict())
 
+def check_condition(op: str, s1: str, s2: str) -> bool:
+    match op:
+        case "ne": 
+            if s1 != s2: return True 
+            if s1 == '0' and s2 == '0': return False # 0 always equals 0
+            return True # + != + is possible
+            
+        case "eq":
+            if s1 != s2: return False
+            return True # + == + is possible (e.g. 1 == 1)
+
+        case "gt":
+            if s1 == '+' and (s2 == '0' or s2 == '-'): return True
+            if s1 == '0' and s2 == '-': return True
+            if s1 == '+' and s2 == '+': return True # 5 > 1
+            if s1 == '-' and s2 == '-': return True # -1 > -5
+            return False
+
+        case "ge":
+            if check_condition("gt", s1, s2): return True
+            if check_condition("eq", s1, s2): return True
+            return False
+
+        case "lt":
+            if s1 == '-' and (s2 == '0' or s2 == '+'): return True
+            if s1 == '0' and s2 == '+': return True
+            if s1 == '-' and s2 == '-': return True
+            if s1 == '+' and s2 == '+': return True
+            return False
+
+        case "le":
+            if check_condition("lt", s1, s2): return True
+            if check_condition("eq", s1, s2): return True
+            return False
+            
+    return False
+
 def step(state: AState) -> list[AState | str]:
     assert isinstance(state, AState), f"expected frame but got {state}"
     frame = state.frames.peek()
     opr = bc[frame.pc]
-    print(f"@@COV {frame.pc.method} {frame.pc.offset}")
+    # print(f"@@COV {frame.pc.method} {frame.pc.offset}") # Optional logging
     logger.debug(f"STEP {opr}\n{state}")
 
     match opr:
@@ -56,13 +93,9 @@ def step(state: AState) -> list[AState | str]:
             newf = new.frames.peek()
             v2 = newf.stack.pop()
             v1 = newf.stack.pop()
-            logger.debug(f"frame.stack: {frame.stack}")
-            logger.debug(f"v2: {v2}")
-            logger.debug(f"v1: {v1}")
 
-            for v in v2.values:
-                if v == '0':
-                    return ["divide by zero"]
+            if '0' in v2.values:
+                return ["divide by zero"]
             
             newf.stack.push(Sign.binary_op(v1, v2, Sign.sign_div))
             newf.pc += 1
@@ -73,103 +106,96 @@ def step(state: AState) -> list[AState | str]:
             newf = new.frames.peek()
             v2 = newf.stack.pop()
             v1 = newf.stack.pop()
-            logger.debug(f"frame.stack: {frame.stack}")
-            logger.debug(f"v2: {v2}")
-            logger.debug(f"v1: {v1}")
             
             newf.stack.push(Sign.binary_op(v1, v2, Sign.sign_sub))
             newf.pc += 1
             return [new]
         
-        case jvm.Return(type=t): # return instruction for void
+        case jvm.Return(type=t): 
+            new_state = state.copy()
+            
             match t:
                 case jvm.Int():
-                    v1 = frame.stack.pop()
-                    state.frames.pop()
-                    if state.frames:
-                        frame = state.frames.peek()
+                    v1 = new_state.frames.peek().stack.pop()
+                    new_state.frames.pop()
+                    if new_state.frames:
+                        frame = new_state.frames.peek()
                         frame.stack.push(v1)
                         frame.pc += 1
-                        return [state]
+                        return [new_state]
                     else:
-                        #print("ok")
                         return ["ok"]
                 case None:
-                    state.frames.pop()
-                    if state.frames:
-                        frame = state.frames.peek()
+                    new_state.frames.pop()
+                    if new_state.frames:
+                        frame = new_state.frames.peek()
                         frame.pc += 1
-                        return [state]
+                        return [new_state]
                     else:
-                        #print("ok")
                         return ["ok"]
-                    
                 case jvm.Reference():
-                    v1 = frame.stack.pop()
-                    state.frames.pop()
-                    if state.frames:
-                        frame = state.frames.peek()
+                    v1 = new_state.frames.peek().stack.pop()
+                    new_state.frames.pop()
+                    if new_state.frames:
+                        frame = new_state.frames.peek()
                         frame.stack.push(v1)
                         frame.pc += 1
-                        return [state]
+                        return [new_state]
                     else:
-                        #print("ok")
                         return ["ok"]
             
-        case jvm.Get(static=s, field=f): # only static int fields
-            frame.stack.push(Sign.abstract(0)) #pushing s to the stack (which is basically a true)
-            frame.pc += 1
-            return [state] 
+        case jvm.Get(static=s, field=f):
+            new = state.copy()
+            new.frames.peek().stack.push(Sign.abstract(0)) 
+            new.frames.peek().pc += 1
+            return [new] 
+
         case jvm.Boolean():
-            frame.stack.push("Z")
-            frame.pc += 1
-            return [state]
+            new = state.copy()
+            new.frames.peek().stack.push("Z")
+            new.frames.peek().pc += 1
+            return [new]
+
         case jvm.Ifz(condition=c, target=t):
-            v = frame.stack.pop()
+            v = frame.stack.peek() 
             vals = v.values
-            print(f"vals in Ifz: {vals}")
-            #assert v.type == jvm.Int()
+            
             jump_possible = False
             nojump_possible = False
+
             match c:
                 case "ne":
                     jump_possible = not ('0' in vals and len(vals) == 1)
-                    #print(f"jump in ne: {jump}")
                     nojump_possible  = '0' in vals
                 case "eq":
                     jump_possible = '0' in vals
-                    #print(f"jump in eq: {jump}")
                     nojump_possible  = any(val != '0' for val in vals)
                 case "gt":
                     jump_possible = '+' in vals
-                    #print(f"jump in gt: {jump}")
                     nojump_possible  = '-' in vals or '0' in vals
                 case "ge":
                     jump_possible = '+' in vals or '0' in vals
-                    #print(f"jump in ge: {jump}")
                     nojump_possible  = '-' in vals
                 case "lt":
                     jump_possible = '-' in vals
-                    #print(f"jump in lt: {jump}")
                     nojump_possible  = '+' in vals or '0' in vals
                 case "le":
                     jump_possible = '-' in vals or '0' in vals
-                    #print(f"jump in le: {jump}")
                     nojump_possible  = '+' in vals
                 case _:
                     raise NotImplementedError(str(c))
-                
+            
             out = []
             if jump_possible:
-                #jump branch
                 sj = state.copy()
                 jf = sj.frames.peek()
+                jf.stack.pop() # Pop here on the copy
                 jf.pc.offset = t
                 out.append(sj)
             if nojump_possible:
-                #no-jump branch
                 sn = state.copy()
                 nf = sn.frames.peek()
+                nf.stack.pop() # Pop here on the copy
                 nf.pc += 1
                 out.append(sn)
             return out
@@ -177,58 +203,62 @@ def step(state: AState) -> list[AState | str]:
         case jvm.New(classname=c):
             return ["assertion error"]
         
-        case jvm.If(condition=c, target=t): # if condition for integers
-            v2 = frame.stack.pop()   # TOP
-            v1 = frame.stack.pop()   # BELOW TOP
-            #assert v1.type == jvm.Int() and v2.type == jvm.Int()
+        case jvm.If(condition=c, target=t):
+            v2 = frame.stack.peek()
+            v1 = state.frames.peek().stack.items[-2] 
+
             jump_possible = False
             nojump_possible = False
+
             for val1 in v1.values:
                 for val2 in v2.values:
-                    match c:
-                        case "ne": jump |= val1 != val2
-                        case "eq": jump |= val1 == val2
-                        case "gt": jump |= val1 > val2
-                        case "ge": jump |= val1 >= val2
-                        case "lt": jump |= val1 < val2
-                        case "le": jump |= val1 <= val2
-                        case _:    raise NotImplementedError(str(c))
+                    if check_condition(c, val1, val2):
+                        jump_possible = True
                     
-                    jump_possible |= jump
-                    nojump_possible |= not jump
+                    inv_c = {"ne":"eq", "eq":"ne", "gt":"le", "ge":"lt", "lt":"ge", "le":"gt"}[c]
+                    if check_condition(inv_c, val1, val2):
+                        nojump_possible = True
+
             out = []
             if jump_possible:
                 sj = state.copy()
                 jf = sj.frames.peek()
+                jf.stack.pop(); jf.stack.pop() # Pop args
                 jf.pc.offset = t
                 out.append(sj)   
-            else:
+            
+            if nojump_possible: # FIX: Check nojump_possible explicitly
                 sn = state.copy()
                 nf = sn.frames.peek()
+                nf.stack.pop(); nf.stack.pop() # Pop args
                 nf.pc += 1
-                out.append(sj)
+                out.append(sn) # FIX: Append 'sn', NOT 'sj'
             return out
         
         case jvm.Goto(target=t):
-            frame.pc.offset = t 
-            return [state]
+            new = state.copy()
+            new.frames.peek().pc.offset = t 
+            return [new]
         
         case jvm.Store(type=t, index=i):
-            v = frame.stack.pop()
-            frame.locals[i] = v
-            frame.pc += 1
-            return [state]
+            new = state.copy()
+            nf = new.frames.peek()
+            v = nf.stack.pop()
+            nf.locals[i] = v
+            nf.pc += 1
+            return [new]
         
         case jvm.Dup(words=w):
-            v = frame.stack.peek()
-            vf = v.copy()
-            frame.stack.push(vf)
-            frame.stack(v)
-            frame.pc += 1
-            return [state]
+            new = state.copy()
+            nf = new.frames.peek()
+            v = nf.stack.peek()
+            # vf = v.copy() # Abstract values are usually immutable, copy might not be needed but is safe
+            nf.stack.push(v)
+            nf.pc += 1
+            return [new]
         
         case a:
-            a.help()
+            # a.help()
             raise NotImplementedError(f"Don't know how to handle: {a!r}")
         
 logger.remove()
