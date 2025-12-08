@@ -1,15 +1,23 @@
 # fuzzer/input_generator.py
 import random
-from typing import List, Any
+from typing import List, Any, Sequence
 
 class InputGenerator:
-    def __init__(self, input_type: type = int, num_params: int = 1):
+    def __init__(
+        self,
+        input_type: type = int,
+        num_params: int = 1,
+        param_types: Sequence[str] | None = None,
+    ):
         """
         Initializes the input generator
         :param input_type: The target input type (default is int, to match division_loop(int n) in the proposal)
+        :param param_types: Optional per-parameter types, e.g. ["bool", "int"].
+                           When "bool" is provided, values are restricted to {0, 1}.
         """
         self.input_type = input_type
         self.num_params = num_params
+        self.param_types = list(param_types) if param_types else ["int"] * num_params
 
         self.random = random.Random()
         self.random.seed(42)  # Fixed seed to ensure reproducibility
@@ -22,9 +30,13 @@ class InputGenerator:
         """
         seeds = []
         for _ in range(count):
-            # Generate a random integer for each parameter and form a tuple
-            seed = tuple(random.randint(-100, 100) for _ in range(self.num_params))
-            seeds.append(seed)
+            seed_vals = []
+            for i, ptype in enumerate(self.param_types):
+                if ptype == "bool":
+                    seed_vals.append(self.random.choice([0, 1]))
+                else:
+                    seed_vals.append(self.random.randint(-100, 100))
+            seeds.append(tuple(seed_vals))
         return seeds
 
     def mutate(self, original_input):
@@ -38,11 +50,17 @@ class InputGenerator:
             return ()
 
         # Randomly select a parameter to mutate
-        idx_to_mutate = random.randrange(len(mutated_list))
+        idx_to_mutate = self.random.randrange(len(mutated_list))
 
-        # Simple mutation strategy: randomly add/subtract a value
-        mutation_value = random.randint(-10, 10)
-        mutated_list[idx_to_mutate] += mutation_value
+        ptype = self.param_types[idx_to_mutate] if idx_to_mutate < len(self.param_types) else "int"
+        if ptype == "bool":
+            # Keep booleans in {0,1} by flipping or re-sampling
+            cur = mutated_list[idx_to_mutate]
+            mutated_list[idx_to_mutate] = 0 if cur == 1 else 1
+        else:
+            # Simple mutation strategy: randomly add/subtract a value
+            mutation_value = self.random.randint(-10, 10)
+            mutated_list[idx_to_mutate] += mutation_value
 
         return tuple(mutated_list)
 

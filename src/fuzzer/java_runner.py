@@ -2,9 +2,43 @@ import subprocess
 import json
 import tempfile
 import os
-from typing import Tuple, Optional, Dict
+from typing import Tuple, Optional, Dict, Sequence
 
 VERBOSE = os.environ.get("FUZZER_VERBOSE") == "1"
+
+
+def _parse_param_types_from_method(method_sig: str) -> list[str]:
+    """
+    Parse JVM descriptor in a method string like 'pkg.Class.method:(ZII)V'.
+    Only distinguishes 'bool' vs 'int' for formatting inputs to Java.
+    """
+    if ":" not in method_sig:
+        return []
+    desc = method_sig.split(":", 1)[1]
+    if "(" not in desc or ")" not in desc:
+        return []
+    args = desc[desc.index("(") + 1 : desc.index(")")]
+    param_types: list[str] = []
+    i = 0
+    while i < len(args):
+        ch = args[i]
+        if ch == "[":
+            i += 1
+            continue
+        if ch == "Z":
+            param_types.append("bool")
+        elif ch == "I":
+            param_types.append("int")
+        elif ch in ("B", "C", "S", "J", "F", "D"):
+            param_types.append("int")
+        elif ch == "L":
+            while i < len(args) and args[i] != ";":
+                i += 1
+            param_types.append("int")
+        else:
+            param_types.append("int")
+        i += 1
+    return param_types
 
 class JavaRunner:
     def __init__(self, java_class_path: str, target_method: str, config, coverage_output_path: str = "coverage_temp.json"):
@@ -17,6 +51,7 @@ class JavaRunner:
         self.target_method = target_method
         self.config = config # Pass in the FuzzerConfig object
         self.runtime_class = "jpamb.Runtime"    # Fixed runtime class for executing the target method
+        self.param_types = _parse_param_types_from_method(target_method)
 
         self.coverage_output_path = coverage_output_path
         # Ensure that there are no residual coverage output files
@@ -46,13 +81,20 @@ class JavaRunner:
 
         # 3. Format the input data
         # --- Core modification: Format the tuple into a Java parameter string ---
+        def _fmt_val(idx: int, val):
+            ptype = self.param_types[idx] if idx < len(self.param_types) else "int"
+            if ptype == "bool":
+                # InputParser expects literal true/false for boolean parameters
+                return "true" if val not in (0, False) else "false"
+            return str(val)
+
         if isinstance(input_data, tuple):
-            # For a tuple (1, 2, 3), create the string "(1,2,3)"
-            param_str = ",".join(map(str, input_data))
+            formatted_vals = [_fmt_val(i, v) for i, v in enumerate(input_data)]
+            param_str = ",".join(formatted_vals)
             formatted_input = f"({param_str})"
         else:
             # Compatible with single value cases, e.g., 42 -> "(42)"
-            formatted_input = f"({input_data})"
+            formatted_input = f"({_fmt_val(0, input_data)})"
 
         java_bin = os.environ.get("JAVA_BIN", "java")
 

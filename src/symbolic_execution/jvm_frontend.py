@@ -39,6 +39,44 @@ def _div_int(lhs: Any, rhs: Any) -> Any:
     # Fallback: return a division BinaryOp
     return BinaryOp("//", lhs, rhs)
 
+def _infer_int_bound(bytecode: Bytecode, method) -> SymInt:
+    """
+    Heuristic bound for int parameters based on literals in the method bytecode.
+    Looks at Push int constants and Incr amounts to size the symbolic domain.
+    """
+    ints: list[int] = []
+
+    ops = []
+    try:
+        ops = bytecode.methods.get(method, [])
+    except Exception:
+        ops = []
+
+    if not ops:
+        offset = 0
+        while True:
+            try:
+                ops.append(bytecode[PC(method, offset)])
+                offset += 1
+            except Exception:
+                break
+
+    for op in ops:
+        if isinstance(op, jvm.Push):
+            val = getattr(op.value, "value", None)
+            if isinstance(val, int):
+                ints.append(val)
+        if isinstance(op, jvm.Incr):
+            inc = getattr(op, "amount", None)
+            if isinstance(inc, int):
+                ints.append(inc)
+
+    max_abs = max((abs(v) for v in ints), default=0)
+    # Scale the bound up generously to allow growth through loops (e.g., repeated div/mul)
+    scaled = max_abs * 1024 if max_abs else 1024
+    bound_val = max(1024, min(20_000_000, scaled))
+    return SymInt(concrete=bound_val)
+
 class JVMFrontend:
     def __init__(self, bytecode: Bytecode, entry_method: jvm.AbsMethodID):
         self.bytecode = bytecode
@@ -50,6 +88,7 @@ class JVMFrontend:
         state = SymbolicState(pc=PC(self.entry_method, 0))
         state.depth = 0
         method_str = str(self.entry_method)
+        int_bound = _infer_int_bound(self.bytecode, self.entry_method)
         try:
             desc = method_str.split(":", 1)[1]    # e.g. "([I)V"
         except IndexError:
@@ -100,9 +139,8 @@ class JVMFrontend:
                 # Model method parameter as a fully symbolic int, but keep it within
                 # a practical bound so the solver stays focused on realistic inputs.
                 sym = SymInt(name=f"arg{local_index}", concrete=None)
-                bound = SymInt(concrete=20000000)
-                state.path_constraint.add(BinaryOp(">=", sym, BinaryOp("*", SymInt(concrete=-1), bound)))
-                state.path_constraint.add(BinaryOp("<=", sym, bound))
+                state.path_constraint.add(BinaryOp(">=", sym, BinaryOp("*", SymInt(concrete=-1), int_bound)))
+                state.path_constraint.add(BinaryOp("<=", sym, int_bound))
                 state.locals[local_index] = sym
                 i += 1
                 local_index += 1
@@ -409,11 +447,10 @@ class JVMFrontend:
             case jvm.InvokeStatic(method=m):
                 new = s.copy()
 
-                # Method descriptor as string, e.g. "jpamb.cases.Simple.assertBoolean:(Z)V"
+                # Method descriptor
                 m_str = str(m)
                 name_part, desc = (m_str.split(":", 1) + [""])[:2]
 
-                # Treat any static method with signature (Z)V as an assertion-like helper:
                 # one boolean argument and void return.
                 if desc.startswith("(Z)") and desc.endswith("V"):
                     # Top of stack is the boolean argument (0 = false, 1 = true)

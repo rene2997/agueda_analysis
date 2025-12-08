@@ -514,11 +514,6 @@ def main() -> None:
                 for k in extra_kinds:
                     presence[k] = True
 
-                corpus_size = results.get("corpus_size", 0)
-                if corpus_size > 0:
-                    # Fuzzer has executed at least one non-crashing test case
-                    presence["ok"] = True
-
                 # Print one compact summary line for the report/debug logging
                 print(
                     "FUZZER_RESULTS:",

@@ -9,6 +9,46 @@ from .input_generator import InputGenerator
 from .java_runner import JavaRunner
 
 
+def _parse_param_types_from_method(method_sig: str) -> list[str]:
+    """
+    Very small parser for JVM-style descriptors in a method string like
+    'pkg.Class.method:(ZII)V'. Returns a list of coarse param types
+    (currently only distinguishes 'bool' vs 'int' to keep fuzz inputs in range).
+    """
+    if ":" not in method_sig:
+        return []
+    desc = method_sig.split(":", 1)[1]
+    if "(" not in desc or ")" not in desc:
+        return []
+    args = desc[desc.index("(") + 1 : desc.index(")")]
+    param_types: list[str] = []
+    i = 0
+    while i < len(args):
+        ch = args[i]
+        if ch == "[":
+            # Skip array prefix and look at element type
+            i += 1
+            continue
+        if ch == "Z":
+            param_types.append("bool")
+        elif ch == "I":
+            param_types.append("int")
+        elif ch == "B" or ch == "C" or ch == "S":
+            # treat narrow ints as int
+            param_types.append("int")
+        elif ch == "J" or ch == "F" or ch == "D":
+            param_types.append("int")
+        elif ch == "L":
+            # object type: consume until ';'
+            while i < len(args) and args[i] != ";":
+                i += 1
+            param_types.append("int")
+        else:
+            param_types.append("int")
+        i += 1
+    return param_types
+
+
 class FuzzerEngine:
     def __init__(self, config: FuzzerConfig):
         self.config = config
@@ -20,9 +60,12 @@ class FuzzerEngine:
         )
         # Initialize other core components
         self.coverage_tracker = CoverageTracker(config=self.config)
-        # --- Modification: Let InputGenerator know the number of parameters ---
-        num_params = len(config.guided_seeds) if config.guided_seeds else 1
-        self.input_generator = InputGenerator(input_type=int, num_params=num_params)
+        # --- Modification: Let InputGenerator know the number/type of parameters ---
+        param_types = _parse_param_types_from_method(config.target_method)
+        num_params = len(param_types) if param_types else (len(config.guided_seeds) if config.guided_seeds else 1)
+        if not param_types:
+            param_types = ["int"] * num_params
+        self.input_generator = InputGenerator(input_type=int, num_params=num_params, param_types=param_types)
         self.corpus_manager = CorpusManager()
         self.error_detector = ErrorDetector()
 
